@@ -14,17 +14,24 @@ This is an experimental **Windows x64, OpenXR-only** build. It requires a connec
 
 For a Reverb G2 with Oasis, start SteamVR and select SteamVR as the OpenXR runtime. Optionally enable **SteamVR Settings > Windows Mixed Reality > Use Proximity Sensor (Presence)**, then restart SteamVR. This enables detection when you put the headset on; it is **not required** for the startup recenter prompt.
 
-## Start the game
+## Install and start
 
-Start your headset/runtime first, then run this from the folder where you extracted the build, replacing the Quake path if necessary:
+1. Extract the Windows ZIP into your Quake folder, beside the `id1` directory. Keep the executable and all supplied DLLs together.
+2. Connect the headset and start its OpenXR runtime (SteamVR for the tested G2/Oasis setup).
+3. Double-click **vkQuake-OpenXR.exe**. No command-line options are required when you launch from the Quake folder.
+4. Keep the desktop game window focused for mouse and keyboard input, then complete the recenter routine below.
+
+SteamVR's startup dashboard is dismissed automatically. Other runtimes may require you to dismiss their system UI yourself.
+
+### Optional: run from a separate folder
+
+If you prefer to keep the engine outside the Quake installation, use `-basedir` to point it at the folder containing `id1`:
 
 ```bat
-vkQuake-OpenXR.exe -basedir "C:\Games\Steam\steamapps\common\Quake" -multiuser -window -width 1280 -height 720
+vkQuake-OpenXR.exe -basedir "C:\Games\Steam\steamapps\common\Quake"
 ```
 
-You can put that command in a shortcut. The base directory is the folder **containing** `id1`, not `id1` itself. `-multiuser` keeps configuration and saves in the per-user preferences folder rather than the game installation. Width and height control the desktop mirror; eye resolution comes from OpenXR.
-
-Keep the desktop game window focused so mouse and keyboard input reaches it. SteamVR's dashboard is dismissed once when the game becomes visible, without needing VR controllers. Other runtimes may require you to dismiss their system UI yourself.
+Other optional arguments are `-multiuser` to store configuration and saves in your user preferences folder, and `-window -width 1280 -height 720` to select a windowed desktop mirror. These are preferences, not requirements for OpenXR rendering.
 
 ## Recenter before playing
 
@@ -35,7 +42,7 @@ The prompt appears at every startup, even when the headset has no presence detec
 3. Check the result. At **Mouse1: confirm  Mouse2: retry**, click **left** to accept, or **right** to try again.
 4. Retry returns to the first prompt. Adjust your position, click left to recenter again, then confirm when satisfied.
 
-There is **no countdown or timed second recenter**. These left/right clicks are intercepted until you accept, including their releases, so they do not fire weapons or activate their usual bindings. Your saved bindings are not changed; normal mouse controls resume after confirmation.
+The recentering clicks do not fire weapons. Normal mouse controls resume after confirmation.
 
 To recenter later, open the Quake console and run `xr_recenter`. For a convenient keyboard shortcut, enter:
 
@@ -43,11 +50,11 @@ To recenter later, open the Quake console and run `xr_recenter`. For a convenien
 bind F11 xr_recenter
 ```
 
-F11 then recenters and opens the same confirm/retry prompt. Recenter resets the tracking offset without changing mouse aim, stock eye height, or the player's collision box. Physical pitch and roll remain relative to the horizon. If supported, putting the headset on again also starts the routine; a not-worn event will not dismiss an unfinished prompt. Application focus is not a recenter trigger.
+F11 then recenters and opens the same confirm/retry prompt. If the runtime supports headset-presence detection, putting the headset on again also starts the routine.
 
 ## Controls and display
 
-Normal Quake keyboard/mouse controls and configuration remain in use. Head look is independent of weapon aim; the shared HUD/crosshair plane centers on the mouse aim ray traced against world and moving brush geometry. Original spread, projectile offsets, autoaim, and mod-specific firing rules remain unchanged. Leaning moves the view without moving the collision box. Menus and console are flat, and the desktop shows a letterboxed right-eye mirror.
+Use the usual Quake mouse and keyboard controls. Mouse movement aims the weapon; head movement changes your view independently. The HUD and crosshair stay together on mouse aim. Menus and console are flat, and the desktop shows a letterboxed right-eye mirror.
 
 If the SteamVR dashboard is opened again, `xr_hide_dashboard` in the Quake console requests dismissal. `xr_auto_hide_dashboard 0` disables the automatic startup request. Dashboard dismissal uses SteamVR's installed `vrcmd` utility and is unavailable on other runtimes.
 
@@ -94,7 +101,7 @@ The Windows GitHub Actions workflow builds its own pinned OpenXR loader, builds 
 
 Build `tests/openxr_display_test.vcxproj` as Release/x64 with MSBuild and run `build\tests\openxr_display_test.exe`. It tests the production backend with a deterministic OpenXR frame source: swapchain formats, asymmetric projection, scale, live eye separation, head/mouse composition, recenter/confirm/retry with and without presence support, captured clicks and releases, invalid tracking, menus without a level, desktop-resize isolation, HUD projection, dashboard dismissal, and balanced frame/image/session handling. It does not test GPU rendering or replace headset checks.
 
-The G2/Oasis/SteamVR setup was tested on an RTX 3080 Ti at 2216 x 2168 pixels per eye using sRGB eye images. Image placement, tracked viewing, and manual recenter/confirm/retry were checked in the headset. SteamVR dashboard dismissal was observed returning the game to focused state. The original fixed-display experiment was replaced with head tracking after testing.
+The G2/Oasis/SteamVR setup was tested on an RTX 3080 Ti at 2216 x 2168 pixels per eye using sRGB eye images. Image placement, tracked viewing, and manual recenter/confirm/retry were checked in the headset.
 
 Remaining checks include physical IPD slider changes, detailed HUD/crosshair alignment at nearby targets, HUD readability across settings, other headsets/runtimes, and sustained performance. Eyes currently record sequentially on the main thread; `r_tasks` does not enable stereo worker recording. Scripted particles advance once per stereo frame. Custom CSQC HUD code runs per eye and needs mod-specific compatibility testing. Runtime stop/restart and video-setting changes should receive further validation with Vulkan/OpenXR validation layers where available.
 
