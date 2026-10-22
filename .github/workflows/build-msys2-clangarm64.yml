@@ -73,7 +73,7 @@ jobs:
         name: vkQuake package (arm64)
         path: vkQuake-*_windows_arm64.zip
     - name: Attach to release
-      if: startsWith(github.ref, 'refs/tags/')
+      if: github.repository == 'Novum/vkQuake' && startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
         draft: true
