@@ -1,7 +1,113 @@
-# 🌋 vkQuake
-[![Windows CI](https://github.com/Novum/vkQuake/actions/workflows/build-windows.yml/badge.svg)](https://github.com/Novum/vkQuake/actions/workflows/build-windows.yml) [![Windows CI](https://github.com/Novum/vkQuake/actions/workflows/build-mingw.yml/badge.svg)](https://github.com/Novum/vkQuake/actions/workflows/build-mingw.yml) [![Windows CI](https://github.com/Novum/vkQuake/actions/workflows/build-msys2-clangarm64.yml/badge.svg)](https://github.com/Novum/vkQuake/actions/workflows/build-msys2-clangarm64.yml) [![Linux CI](https://github.com/Novum/vkQuake/actions/workflows/build-linux.yml/badge.svg)](https://github.com/Novum/vkQuake/actions/workflows/build-linux.yml) [![macOS CI](https://github.com/Novum/vkQuake/actions/workflows/build-mac.yml/badge.svg)](https://github.com/Novum/vkQuake/actions/workflows/build-mac.yml) [![Formatting](https://github.com/Novum/vkQuake/actions/workflows/clang-format-check.yml/badge.svg)](https://github.com/Novum/vkQuake/actions/workflows/clang-format-check.yml)
+# vkQuake-OpenXR
 
-vkQuake is a port of id Software's [Quake](https://en.wikipedia.org/wiki/Quake_(video_game)) using Vulkan instead of OpenGL for rendering. It is based on the popular [QuakeSpasm](http://quakespasm.sourceforge.net/) and [QuakeSpasm-Spiked](https://triptohell.info/moodles/qss/) ports and runs all mods compatible with QuakeSpasm like [Arcane Dimensions](http://www.moddb.com/mods/arcane-dimensions). 
+Play Quake in a PC VR headset using the usual **mouse and keyboard**, with stereoscopic rendering and head tracking. Mouse movement still aims and steers the game; turning or leaning your head changes your view without changing where the weapon fires. The HUD and crosshair stay together on mouse aim. VR controllers are not used.
+
+This is an experimental **Windows x64, OpenXR-only** build. It requires a connected headset and has no desktop-only renderer. Use regular vkQuake when playing on a monitor. Tested with an HP Reverb G2, Oasis, and SteamVR; other compatible PC OpenXR headsets have not been verified. Smooth locomotion and mouse turning can still be uncomfortable in VR; stop if you feel unwell.
+
+## What you need
+
+- A Windows x64 PC with a Vulkan-capable GPU and its current graphics driver.
+- A PC VR headset with a working Windows OpenXR runtime that supports Vulkan. Start the headset's PC connection software and select that runtime as the active OpenXR runtime. A standalone headset must be connected to the PC; this is not an Android/Quest application.
+- Quake game data: a base folder containing `id1\pak0.pak`, plus `id1\pak1.pak` for the full game. Game data is not included.
+- The vkQuake-OpenXR Windows ZIP, extracted to a writable folder with **all supplied DLLs beside `vkQuake-OpenXR.exe`**. End users do not need the Vulkan or OpenXR development SDKs.
+- The Microsoft Visual C++ x64 runtime if Windows reports a missing `VCRUNTIME140` or `MSVCP140` DLL. Use Microsoft's [supported Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+
+For a Reverb G2 with Oasis, start SteamVR and select SteamVR as the OpenXR runtime. Optionally enable **SteamVR Settings > Windows Mixed Reality > Use Proximity Sensor (Presence)**, then restart SteamVR. This enables detection when you put the headset on; it is **not required** for the startup recenter prompt.
+
+## Install and start
+
+1. Extract the Windows ZIP into your Quake folder, beside the `id1` directory. Keep the executable and all supplied DLLs together.
+2. Connect the headset and start its OpenXR runtime (SteamVR for the tested G2/Oasis setup).
+3. Double-click **vkQuake-OpenXR.exe**. No command-line options are required when you launch from the Quake folder.
+4. Keep the desktop game window focused for mouse and keyboard input, then complete the recenter routine below.
+
+SteamVR's startup dashboard is dismissed automatically. Other runtimes may require you to dismiss their system UI yourself.
+
+### Optional: run from a separate folder
+
+If you prefer to keep the engine outside the Quake installation, use `-basedir` to point it at the folder containing `id1`:
+
+```bat
+vkQuake-OpenXR.exe -basedir "C:\Games\Steam\steamapps\common\Quake"
+```
+
+Other optional arguments are `-multiuser` to store configuration and saves in your user preferences folder, and `-window -width 1280 -height 720` to select a windowed desktop mirror. These are preferences, not requirements for OpenXR rendering.
+
+## Recenter before playing
+
+The prompt appears at every startup, even when the headset has no presence detection:
+
+1. Put the headset on, sit in your actual playing position, and look straight ahead.
+2. At **Press Mouse1 to recenter**, click the **left mouse button**. The game captures your current position and heading.
+3. Check the result. At **Mouse1: confirm  Mouse2: retry**, click **left** to accept, or **right** to try again.
+4. Retry returns to the first prompt. Adjust your position, click left to recenter again, then confirm when satisfied.
+
+The recentering clicks do not fire weapons. Normal mouse controls resume after confirmation.
+
+To recenter later, open the Quake console and run `xr_recenter`. For a convenient keyboard shortcut, enter:
+
+```text
+bind F11 xr_recenter
+```
+
+F11 then recenters and opens the same confirm/retry prompt. If the runtime supports headset-presence detection, putting the headset on again also starts the routine.
+
+## Controls and display
+
+Use the usual Quake mouse and keyboard controls. Mouse movement aims the weapon; head movement changes your view independently. The HUD and crosshair stay together on mouse aim. Menus and console are flat, and the desktop shows a letterboxed right-eye mirror.
+
+If the SteamVR dashboard is opened again, `xr_hide_dashboard` in the Quake console requests dismissal. `xr_auto_hide_dashboard 0` disables the automatic startup request. Dashboard dismissal uses SteamVR's installed `vrcmd` utility and is unavailable on other runtimes.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `xr_units_per_meter` | `30.621172` | World scale: 56 Quake units equal 6 feet. Larger values make the world appear smaller relative to eye spacing. |
+| `xr_hud_distance` | `2` | Reference distance in meters for HUD angular size. |
+| `xr_hud_width` | `1.6` | HUD width at the reference distance; height follows the eye image aspect ratio. |
+| `xr_auto_hide_dashboard` | `1` | Dismiss SteamVR's startup dashboard once. |
+
+These settings are saved. `r_width` / `r_height` can reduce scene resolution while retaining native-resolution UI. SteamVR's per-application resolution setting can change the eye resolution at the next launch. Normal zoom commands and underwater effects remain available.
+
+## Compatibility and troubleshooting
+
+The renderer uses runtime-reported eye geometry, resolution, field of view, and tracking; it contains no G2-specific optical constants. It requires `XR_KHR_vulkan_enable2`, two-eye `PRIMARY_STEREO` rendering with opaque composition, and an RGBA8/BGRA8 UNORM or sRGB swapchain format. Headset-worn detection additionally requires optional `XR_EXT_user_presence` support and a working sensor signal. The startup prompt and manual recentering work without it.
+
+- **OpenXR initialization fails:** connect the headset, start its PC runtime, and check which runtime is selected as active. SteamVR is the tested runtime, not a requirement for all headsets.
+- **View or weapon height feels wrong:** sit in position and run the manual recenter routine again.
+- **Mouse does nothing:** focus the desktop game window. During recentering, finish the confirm/retry prompt before expecting normal button bindings.
+- **Quake data cannot be found:** check `-basedir` and `id1\pak0.pak`.
+- **Putting the headset on is not detected:** use the startup prompt or `xr_recenter`; for Oasis, enable the optional proximity setting and restart SteamVR.
+
+Other platform build systems still build upstream vkQuake and have not been converted to OpenXR. There is no standalone headset build in this fork.
+
+## Build from source (Windows x64)
+
+Install Visual Studio 2026 with the v145 C++ build tools, a Windows SDK, CMake, the Vulkan SDK, and the [Khronos OpenXR SDK](https://github.com/KhronosGroup/OpenXR-SDK). The tested OpenXR SDK is release 1.1.63. The OpenXR loader is linked statically; no separate loader DLL is distributed.
+
+Place `OpenXR-SDK` beside this repository, then build its static loader from a developer command prompt:
+
+```bat
+cmake -S ..\OpenXR-SDK -B ..\OpenXR-SDK\build -G "Visual Studio 18 2026" -A x64 -DDYNAMIC_LOADER=OFF
+cmake --build ..\OpenXR-SDK\build --config Release --target openxr_loader
+build.cmd
+```
+
+The game and companion DLLs are written to `Windows\VisualStudio\Build-vkQuake-OpenXR\x64\Release`. `build.cmd` defaults to Release/x64 and locates MSBuild through Visual Studio's installer.
+
+Defaults are Vulkan SDK `C:\VulkanSDK\1.4.363.0` and the sibling `..\OpenXR-SDK`. Override `VULKAN_SDK` in the environment or pass `/p:VULKAN_SDK=...`, `/p:OpenXRSDK=...`, or `/p:OpenXRLoaderLibrary=...` to MSBuild through `build.cmd`. Debug builds require the matching Debug loader (`build\src\loader\Debug\openxr_loaderd.lib`); build it with `--config Debug` first.
+
+## Developer checks
+
+Build `tests/openxr_display_test.vcxproj` as Release/x64 with MSBuild and run `build\tests\openxr_display_test.exe`. It tests the production backend with a deterministic OpenXR frame source: swapchain formats, asymmetric projection, scale, live eye separation, head/mouse composition, recenter/confirm/retry with and without presence support, captured clicks and releases, invalid tracking, menus without a level, desktop-resize isolation, HUD projection, dashboard dismissal, and balanced frame/image/session handling. It does not test GPU rendering or replace headset checks.
+
+The G2/Oasis/SteamVR setup was tested on an RTX 3080 Ti at 2216 x 2168 pixels per eye using sRGB eye images. Image placement, tracked viewing, and manual recenter/confirm/retry were checked in the headset.
+
+Custom CSQC HUD compatibility depends on the mod.
+
+The upstream vkQuake documentation follows. Other platform build systems have not been converted to OpenXR.
+
+---
+
+vkQuake is a port of id Software's [Quake](https://en.wikipedia.org/wiki/Quake_(video_game)) using Vulkan instead of OpenGL for rendering. It is based on the popular [QuakeSpasm](http://quakespasm.sourceforge.net/) and [QuakeSpasm-Spiked](https://triptohell.info/moodles/qss/) ports and runs all mods compatible with QuakeSpasm like [Arcane Dimensions](http://www.moddb.com/mods/arcane-dimensions).
 
 Improvements over QuakeSpasm include:
 * Much better performance with multithreaded rendering and loading
