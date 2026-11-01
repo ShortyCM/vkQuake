@@ -16,6 +16,8 @@ void main ()
 	for (uint sample_index = 0; sample_index < push_constants.samples; ++sample_index)
 		color += texelFetch (frames, ivec3 (ivec2 (gl_FragCoord.xy), int (sample_index)), 0).rgb;
 	color /= float (push_constants.samples);
-	// As with a display gamma ramp, gamma is applied after combining the images.
-	out_frag_color = vec4 (pow (color * push_constants.contrast, vec3 (push_constants.gamma)), 1.0);
+	// Glide's display ramp applies gamma, then contrast, after combining the images.
+	color = pow (color, vec3 (push_constants.gamma));
+	color *= push_constants.contrast;
+	out_frag_color = vec4 (color, 1.0);
 }
