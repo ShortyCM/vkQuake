@@ -235,6 +235,25 @@ static const crosshair_t crosshair_defs[] =
 static const size_t num_crosshair_defs = countof (crosshair_defs);
 // clang-format on
 
+// Autosave
+static struct
+{
+	const char *title;
+	float		autosave_duration;
+} autosave_presets[] = {
+	{"Off", 30.0f}, // Use default
+	{"every 10 s", 10.0f},
+	{"every 20 s", 20.0f},
+	{"every 30 s", 30.0f}, // default value
+	{"every 1 mn", 1 * 60.0f},
+	{"every 2 mn", 2 * 60.0f},
+	{"every 5 mn", 5 * 60.0f},
+	{"every 10 mn", 10 * 60.0f},
+	{"every 20 mn", 20 * 60.0f},
+};
+
+const int num_autosave_presets = countof (autosave_presets);
+
 /*
 ================
 M_GetCrosshairDef
@@ -1685,24 +1704,6 @@ enum
 static int game_options_cursor = 0;
 static int first_game_option = 0;
 
-static struct
-{
-	const char *title;
-	float		autosave_duration;
-} autosave_presets[] = {
-	{"Off", 0.0f},
-	{"every 10 s", 10.0f},
-	{"every 20 s", 20.0f},
-	{"every 30 s", 30.0f},
-	{"every 1 mn", 1 * 60.0f},
-	{"every 2 mn", 2 * 60.0f},
-	{"every 5 mn", 5 * 60.0f},
-	{"every 10 mn", 10 * 60.0f},
-	{"every 20 mn", 20 * 60.0f},
-};
-
-const int num_autosave_presets = countof (autosave_presets);
-
 static void M_Menu_GameOptions_f (void)
 {
 	memset (&menu_preview, 0, sizeof (menu_preview));
@@ -1870,7 +1871,7 @@ static void M_GameOptions_AdjustSliders (int dir, qboolean mouse)
 
 		// Force new cvar values
 		Cvar_SetValue ("sv_autosave", (new_autosave_preset_index > 0) ? 1.0f : 0.0f);
-		Cvar_SetValue ("sv_autosave_interval", (new_autosave_preset_index > 0) ? autosave_presets[new_autosave_preset_index].autosave_duration : 30.0f);
+		Cvar_SetValue ("sv_autosave_interval", autosave_presets[new_autosave_preset_index].autosave_duration);
 	}
 	break;
 	case GAME_OPT_SAVEICON: // Show an icon when save is in progress
@@ -2081,28 +2082,36 @@ static void M_GameOptions_Draw (cb_context_t *cbx)
 
 		case GAME_OPT_AUTOSAVE:
 		{
-			int	  closest_autosave_preset_index = 0;
-			float min_delta_time = FLT_MAX;
-			// Autosave activated / or not, find the current preset closest to sv_autosave_interval and display as if the preset was active
-			// while the applicable value stays sv_autosave_interval as set previously.
+			// Atosave :
+			M_Print (cbx, MENU_LABEL_X, y, "Autosave");
+
+			// Display the effective value set in sv_autosave_interval,
+			// overriding the preset value, even if the next applied setting using the menu will use the autosave_presets again.
 			if (sv_autosave.value <= 0.0f || sv_autosave_interval.value <= 0.0f)
 			{
-				closest_autosave_preset_index = 0;
+				M_Print (cbx, MENU_VALUE_X, y, "Off");
 			}
 			else
 			{
-				// skip the "off" setting
-				for (int j = 1; j < num_autosave_presets; j++)
+				if (sv_autosave_interval.value < 60.0f)
 				{
-					if (fabs (sv_autosave_interval.value - autosave_presets[j].autosave_duration) < min_delta_time)
+					M_Print (cbx, MENU_VALUE_X, y, va ("Every %i s", (int)sv_autosave_interval.value));
+				}
+				else
+				{
+					int nb_minutes = (int)(sv_autosave_interval.value / 60.0f);
+					int nb_seconds = (int)(sv_autosave_interval.value - nb_minutes * 60.0f);
+
+					if (nb_seconds > 0)
 					{
-						min_delta_time = fabs (sv_autosave_interval.value - autosave_presets[j].autosave_duration);
-						closest_autosave_preset_index = j;
+						M_Print (cbx, MENU_VALUE_X, y, va ("Every %i mn %i s", nb_minutes, nb_seconds));
+					}
+					else
+					{
+						M_Print (cbx, MENU_VALUE_X, y, va ("Every %i mn", nb_minutes));
 					}
 				}
 			}
-			M_Print (cbx, MENU_LABEL_X, y, "Autosave");
-			M_Print (cbx, MENU_VALUE_X, y, autosave_presets[closest_autosave_preset_index].title);
 		}
 		break;
 
