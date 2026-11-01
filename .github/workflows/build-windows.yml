@@ -43,6 +43,12 @@ jobs:
         )
         & $msbuild Windows\VisualStudio\vkquake.sln $options
         if (-not $?) { throw "Build failed" }
+        if ('${{ matrix.configuration }}' -eq 'Release') {
+          & $msbuild tests\steam_audio_native.vcxproj /p:Configuration=Release /p:Platform=x64 /nologo /v:minimal
+          if (-not $?) { throw "Native audio test build failed" }
+          & build\tests\steam-audio\steam_audio_native.exe
+          if (-not $?) { throw "Native audio tests failed" }
+        }
     - name: Upload vkQuake
       uses: actions/upload-artifact@v7
       with:
@@ -50,6 +56,7 @@ jobs:
         path: |
             Windows\VisualStudio\Build-vkQuake\**\*.exe
             Windows\VisualStudio\Build-vkQuake\**\*.dll
+            Windows\VisualStudio\Build-vkQuake\**\SteamAudio-*.txt
             Windows\VisualStudio\Build-vkQuake\**\vkQuake.pdb
     - name: Package
       if: matrix.configuration == 'Release'
@@ -57,7 +64,7 @@ jobs:
         $version = '${{ steps.version.outputs.version }}'
         $srcdir = 'Windows\VisualStudio\Build-vkQuake\${{ matrix.platform }}\Release'
         $compress = @{
-          Path = "$srcdir\*.exe", "$srcdir\vkQuake.pdb", "$srcdir\*.dll", 'LICENSE.txt'
+          Path = "$srcdir\*.exe", "$srcdir\*.dll", "$srcdir\SteamAudio-*.txt", 'LICENSE.txt'
           CompressionLevel = 'Optimal'
           DestinationPath = "Packaging\Windows\vkQuake-${version}_windows_${{ matrix.platform }}.zip"
         }

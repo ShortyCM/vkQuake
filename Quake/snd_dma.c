@@ -187,6 +187,7 @@ void S_Init (void)
 	Cvar_RegisterVariable (&snd_filterquality);
 	Cvar_RegisterVariable (&snd_waterfx);
 	Cvar_RegisterVariable (&snd_pauselooping);
+	S_SteamAudio_Register ();
 
 	if (safemode || COM_CheckParm ("-nosound"))
 		return;
@@ -240,6 +241,7 @@ void S_Init (void)
 // =======================================================================
 void S_Shutdown (void)
 {
+	S_SteamAudio_Shutdown ();
 	if (!sound_started)
 		return;
 
@@ -473,9 +475,10 @@ void S_StartSound (int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float 
 	target_chan->master_vol = (int)(fvol * 255);
 	target_chan->entnum = entnum;
 	target_chan->entchannel = entchannel;
+	S_SteamAudio_StartSound (target_chan);
 	SND_Spatialize (target_chan);
 
-	if (!target_chan->leftvol && !target_chan->rightvol)
+	if (!S_SteamAudio_Active () && !target_chan->leftvol && !target_chan->rightvol)
 		goto unlock_mutex;
 
 	// new channel
@@ -532,6 +535,7 @@ void S_StopSound (int entnum, int entchannel)
 		{
 			snd_channels[i].end = 0;
 			snd_channels[i].sfx = NULL;
+			S_SteamAudio_StartSound (&snd_channels[i]);
 			goto unlock_mutex;
 		}
 	}
@@ -568,6 +572,7 @@ void S_StopAllSounds (qboolean clear, qboolean keep_statics)
 
 	if (clear)
 		S_ClearBuffer ();
+	S_SteamAudio_Reset ();
 
 unlock_mutex:
 	SDL_UnlockMutex (snd_mutex);
@@ -648,6 +653,7 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, int vol, float attenuation)
 	ss->master_vol = vol;
 	ss->dist_mult = (attenuation / 64) / sound_nominal_clip_dist;
 	ss->end = paintedtime + sc->length;
+	S_SteamAudio_StartSound (ss);
 
 	SND_Spatialize (ss);
 
@@ -851,6 +857,7 @@ void S_Update (vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 
 	// update general area ambient sound sources
 	S_UpdateAmbientSounds ();
+	S_SteamAudio_Update ();
 
 	combine = NULL;
 
@@ -867,7 +874,7 @@ void S_Update (vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 		// try to combine static sounds with a previous channel of the same
 		// sound effect so we don't mix five torches every frame
 
-		if (i >= MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS)
+		if (!S_SteamAudio_Active () && i >= MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS)
 		{
 			// see if it can just use the last one
 			if (combine && combine->sfx == ch->sfx)
@@ -982,10 +989,16 @@ static void S_Update_ (void)
 
 	SNDDMA_LockBuffer ();
 	if (!shm->buffer)
+	{
+		SNDDMA_Submit ();
 		goto unlock_mutex;
+	}
 
 	// Updates DMA time
 	GetSoundtime ();
+	// SDL only needs the device lock while reading/writing the ring buffer.
+	// HRTF/convolution processing must not prevent its callback from running.
+	SNDDMA_Submit ();
 
 	// check to make sure that we haven't overshot
 	if (paintedtime < soundtime)
@@ -998,10 +1011,14 @@ static void S_Update_ (void)
 	endtime = soundtime + (unsigned int)(_snd_mixahead.value * shm->speed);
 	samps = shm->samples >> (shm->channels - 1);
 	endtime = q_min (endtime, (unsigned int)(soundtime + samps));
+	if (S_SteamAudio_Active () && endtime > (unsigned int)paintedtime)
+	{
+		unsigned int blocks = (endtime - paintedtime + STEAMAUDIO_FRAME_SIZE - 1) / STEAMAUDIO_FRAME_SIZE;
+		blocks = q_min (blocks, (unsigned int)(soundtime + samps - paintedtime) / STEAMAUDIO_FRAME_SIZE);
+		endtime = paintedtime + blocks * STEAMAUDIO_FRAME_SIZE;
+	}
 
 	S_PaintChannels (endtime);
-
-	SNDDMA_Submit ();
 
 unlock_mutex:
 	SDL_UnlockMutex (snd_mutex);

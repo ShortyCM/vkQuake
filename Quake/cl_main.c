@@ -127,6 +127,7 @@ CL_ClearState
 */
 void CL_ClearState (void)
 {
+	S_SteamAudio_ClearMap ();
 	if (!sv.active)
 		Host_ClearMemory ();
 
@@ -166,6 +167,7 @@ void CL_Disconnect (void)
 
 	// stop sounds (especially looping!)
 	S_StopAllSounds (true, false);
+	S_SteamAudio_ClearMap ();
 	BGM_Stop ();
 	CDAudio_Stop ();
 

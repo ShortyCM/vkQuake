@@ -2590,6 +2590,7 @@ enum
 	SOUND_OPT_MUSICVOL,
 	SOUND_OPT_MUSICEXT,
 	SOUND_OPT_WATERFX,
+	SOUND_OPT_RENDERER,
 	SOUND_OPTIONS_ITEMS
 };
 
@@ -2631,6 +2632,10 @@ static void M_SoundOptions_AdjustSliders (int dir, qboolean mouse)
 		break;
 	case SOUND_OPT_WATERFX:
 		Cvar_SetValueQuick (&snd_waterfx, (float)(((int)snd_waterfx.value + 2 + dir) % 2));
+		break;
+	case SOUND_OPT_RENDERER:
+		if (dir)
+			Cvar_SetValueQuick (&snd_renderer, snd_renderer.value == 1 ? 0 : 1);
 		break;
 	}
 }
@@ -2701,6 +2706,9 @@ static void M_SoundOptions_Draw (cb_context_t *cbx)
 
 	M_Print (cbx, MENU_LABEL_X, top + CHARACTER_SIZE * SOUND_OPT_WATERFX, "Underwater FX");
 	M_DrawCheckbox (cbx, MENU_VALUE_X, top + CHARACTER_SIZE * SOUND_OPT_WATERFX, snd_waterfx.value);
+
+	M_Print (cbx, MENU_LABEL_X, top + CHARACTER_SIZE * SOUND_OPT_RENDERER, "Renderer");
+	M_Print (cbx, MENU_VALUE_X, top + CHARACTER_SIZE * SOUND_OPT_RENDERER, snd_renderer.value == 1 ? "Steam Audio HRTF" : "Stereo");
 
 	// cursor
 	M_Mouse_UpdateListCursor (&sound_options_cursor, MENU_CURSOR_X, 320, top, CHARACTER_SIZE, SOUND_OPTIONS_ITEMS, 0);
@@ -5452,6 +5460,7 @@ void M_Init (void)
 	Cmd_AddCommand ("menu_multiplayer", M_Menu_MultiPlayer_f);
 	Cmd_AddCommand ("menu_setup", M_Menu_Setup_f);
 	Cmd_AddCommand ("menu_options", M_Menu_Options_f);
+	Cmd_AddCommand ("menu_sound", M_Menu_SoundOptions_f);
 	Cmd_AddCommand ("menu_keys", M_Menu_Keys_f);
 	Cmd_AddCommand ("menu_video", M_Menu_Video_f);
 	Cmd_AddCommand ("help", M_Menu_Help_f);
@@ -5516,7 +5525,7 @@ void M_UpdateMouse (void)
 			M_GameOptions_AdjustSliders (0, true);
 		else if (keydown[K_MOUSE1] && (m_state == m_graphics) && graphic_option_has_sliders)
 			M_GraphicsOptions_AdjustSliders (0, true);
-		else if (keydown[K_MOUSE1] && (m_state == m_sound) && (graphics_options_cursor >= SOUND_OPT_SNDVOL) && (graphics_options_cursor <= SOUND_OPT_MUSICVOL))
+		else if (keydown[K_MOUSE1] && (m_state == m_sound) && (sound_options_cursor >= SOUND_OPT_SNDVOL) && (sound_options_cursor <= SOUND_OPT_MUSICVOL))
 			M_SoundOptions_AdjustSliders (0, true);
 		else
 			slider_grab = false;

@@ -36,6 +36,60 @@ Console equivalents are `vid_fsaamode 2` (2x), `vid_fsaamode 3` (4x), and `vid_f
 
 For Windows runtime validation, build Debug and run `powershell -ExecutionPolicy Bypass -File tests/rgss-smoke.ps1 -GameDirectory "C:\path\to\Quake"` with `VULKAN_SDK` set. The test copies game data into an isolated directory under `build`, checks twenty rendering configurations with Vulkan synchronization validation, and saves screenshots for visual review.
 
+## Steam Audio
+
+In **Options > Sound**, the bottom **Renderer** row selects **Stereo** or **Steam Audio HRTF**. Stereo remains the default and uses the original mixer. Changes apply immediately. Steam Audio produces binaural stereo for headphones using the native SDK's built-in HRTF; no SOFA file, Steam client, or map authoring tool is required. If the native library cannot be initialized, the engine reports the reason and returns to Stereo.
+
+World sounds follow their emitting entities and the listener's position and orientation. The renderer applies HRTF directionality, volumetric occlusion, frequency-dependent transmission and air absorption, convolution reflections, listener reverberation, and baked pathing with runtime visibility validation and alternate paths. Brush geometry follows moving doors, lifts, rotating brushes, and entity scale, including the last known transforms of brushes outside the visible set. Local player/menu sounds and BSP ambient loops remain centered; music remains stereo. The existing underwater effect and volume controls still apply.
+
+Existing BSP maps and mods need no changes. Acoustic triangles come from their loaded world and brush models. Texture names supply approximate masonry, metal, wood, glass, earth, and fence materials; legacy maps contain no measured acoustic materials. Sky and liquid surfaces are excluded from the acoustic mesh. Probe placement samples open BSP leaves, preserves separated rooms, and increases spacing on large maps to fit a 2,048-probe budget. Extremely fragmented maps use a deterministic sample across the entire map. Pathing is an approximation based on these probes, with a 100-metre maximum baked path length. Dynamic models made of alias, MD3, or MD5 triangles are sound emitters but do not obstruct sound.
+
+The first visit builds the scene and bakes pathing in the background. Direct sound and real-time reflections work while pathing prepares. The engine caches the scene and baked probes under the active game's writable `steamaudio` directory, such as `id1/steamaudio` or `hipnotic/steamaudio`. Content hashes, SDK/schema versions, and checksums invalidate changed or damaged data automatically. Mod data stays in its own write directory. A read-only cache directory still permits acoustic simulation for the current session. Map changes and renderer switches cancel outstanding work and release its resources.
+
+These archived console settings control quality and cost:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `snd_renderer` | `0` | `0` = Stereo; `1` = Steam Audio HRTF |
+| `snd_steam_occlusion` | `1` | Geometry occlusion |
+| `snd_steam_transmission` | `1` | Transmission through occluders; requires occlusion |
+| `snd_steam_reflections` | `1` | Individual source reflections |
+| `snd_steam_reverb` | `1` | Listener reverberation for local sounds and remaining voices |
+| `snd_steam_pathing` | `1` | Baked pathing with dynamic validation |
+| `snd_steam_reflection_gain` | `0.7` | Individual reflected sound gain, 0–2 |
+| `snd_steam_reverb_gain` | `0.25` | Listener reverb gain, 0–2 |
+| `snd_steam_path_gain` | `0.7` | Pathing gain, 0–2 |
+| `snd_steam_sources` | `16` | Loudest voices with individual reflections/pathing, 1–32; changing this restarts the renderer |
+| `snd_steam_rays` | `2048` | Reflection rays per update, 256–8192 |
+| `snd_steam_bounces` | `16` | Reflection bounces, 1–64 |
+| `snd_steam_update_hz` | `20` | Target simulation update rate, 5–60; CPU cost can reduce the achieved rate |
+| `snd_steam_probe_spacing` | `128` | Starting probe spacing in Quake units, 64–512; applies on the next map load/rebuild |
+| `snd_steam_cache` | `1` | Read/write acoustic caches; applies on the next map load/rebuild |
+
+All audible world voices receive HRTF and direct simulation. A bounded pool handles individual indirect sound; other voices feed listener reverb. DSP uses 512-sample blocks and first-order Ambisonics with two-second convolution responses. Quake's direct distance attenuation is preserved, while indirect sound uses the SDK's inverse-distance model. Lower `snd_steam_sources`, `snd_steam_rays`, or `snd_steam_bounces` to reduce CPU use. `snd_steam_info` reports the renderer, geometry, probe/cache status, and simulation counters. `snd_steam_rebuild` regenerates the current map's acoustic data.
+
+### Native SDK and builds
+
+`ThirdParty/SteamAudio` contains the official 4.8.1 API headers, licenses, Windows x64 runtime/import library, and build provenance. The runtime was compiled from the existing Valve source checkout with its built-in HRTF, CPU ray tracer, PFFFT convolution, and libmysofa. IPP, Embree, Radeon Rays, and TrueAudio Next are disabled. Visual Studio, MinGW x64, and Windows x64 Meson builds copy `phonon.dll` and its license notices alongside the executable; Windows installers and archives include them.
+
+Rebuild the runtime from an existing SDK source checkout with Python 3, Git, CMake, and Visual Studio installed:
+
+```powershell
+python Misc/build-steam-audio.py C:/users/Clay/source/repos/steam-audio --cmake "C:/path/to/cmake.exe"
+```
+
+The default generator is Visual Studio 2026; pass `--generator "Visual Studio 17 2022"` when building with VS 2022. The script stages source under `build/steam-audio`, uses Valve's pinned dependency manifest to fetch missing build dependencies, and leaves the original checkout untouched. It applies `Misc/steam-audio-pffft-alignment.patch`, a one-line fix for an aligned SIMD load in Steam Audio 4.8.1's unaligned convolution branch. Without that fix, this non-IPP build can crash on odd Ambisonic channels. The patch is needed for non-IPP builds on other platforms as well.
+
+Linux/macOS builds use the same renderer source and dynamically load `libphonon.so` / `libphonon.dylib` from beside the executable or the system library path. Supply a matching native SDK build using `meson setup build -Dsteam_audio_library=/path/to/libphonon.so` or `make STEAMAUDIO_LIBRARY=/path/to/libphonon.so` (substitute `.dylib` on macOS). Windows ARM64 Make builds accept `STEAMAUDIO_LIBRARY=/path/to/arm64/phonon.dll`; a Windows ARM64 SDK runtime is not bundled. Stereo remains available on platforms without a matching SDK library.
+
+Implementation references: Valve's [native API guide](https://valvesoftware.github.io/steam-audio/doc/capi/guide.html), [simulation API](https://valvesoftware.github.io/steam-audio/doc/capi/simulation.html), and [baking API](https://valvesoftware.github.io/steam-audio/doc/capi/baking.html).
+
+### Audio validation
+
+Build and run `tests/steam_audio_native.vcxproj` in Release/x64 to exercise the actual native SDK at 44.1 and 48 kHz with validation enabled: horizontal/front/back/elevation HRTF responses, occlusion/transmission, a moving wall, convolution tails, listener reverb, serialized pathing, path DSP, and dynamic path validation.
+
+After building vkQuake, run `powershell -ExecutionPolicy Bypass -File tests/steam-audio-smoke.ps1 -GameDirectory "C:/path/to/Quake"`. The test copies owned game data into a private directory under `build`, plays demo maps, changes renderer and map, verifies simulation and cache reuse, and saves menu screenshots plus `audio.wav`. The silent SDL disk capture is checked for finite, nonzero stereo output. Use `-Executable` to select another build, `-Mod hipnotic` or `-Mod rogue` for installed mission packs, or `-RealAudio` for playback through the configured device. `-WithoutSDK` checks fallback using an isolated executable directory. Reuse a previous test's `-Artifacts` directory with `-CorruptCache` to damage its test cache deliberately and verify regeneration. Windows CI also runs the native SDK regression tests without game assets.
+
 ## Installation
 
 Windows and Linux binaries can be found in [Releases](https://github.com/Novum/vkQuake/releases).

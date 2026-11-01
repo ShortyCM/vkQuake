@@ -53,8 +53,8 @@ Section "Game" GAME
 	SectionIn RO
 	SetOutPath "$INSTDIR"
     File "${SRCDIR}\*.exe"
-	File "${SRCDIR}\vkQuake.pdb"
 	File "${SRCDIR}\*.dll"
+	File "${SRCDIR}\SteamAudio-*.txt"
 	File "..\..\LICENSE.txt"
 	
 	!insertmacro MUI_STARTMENU_WRITE_BEGIN Application

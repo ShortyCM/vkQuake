@@ -64,17 +64,20 @@ typedef struct
 /* !!! if this is changed, it must be changed in asm_i386.h too !!! */
 typedef struct
 {
-	sfx_t *sfx;		 /* sfx number					*/
-	int	   leftvol;	 /* 0-255 volume					*/
-	int	   rightvol; /* 0-255 volume					*/
-	int	   end;		 /* end time in global paintsamples		*/
-	int	   pos;		 /* sample position in sfx			*/
-	int	   looping;	 /* where to loop, -1 = no looping		*/
-	int	   entnum;	 /* to allow overriding a specific sound		*/
-	int	   entchannel;
-	vec3_t origin;	   /* origin of sound effect			*/
-	vec_t  dist_mult;  /* distance multiplier (attenuation/clipK)	*/
-	int	   master_vol; /* 0-255 master volume				*/
+	sfx_t	*sfx;	   /* sfx number					*/
+	int		 leftvol;  /* 0-255 volume					*/
+	int		 rightvol; /* 0-255 volume					*/
+	int		 end;	   /* end time in global paintsamples		*/
+	int		 pos;	   /* sample position in sfx			*/
+	int		 looping;  /* where to loop, -1 = no looping		*/
+	int		 entnum;   /* to allow overriding a specific sound		*/
+	int		 entchannel;
+	vec3_t	 origin;	 /* origin of sound effect			*/
+	vec_t	 dist_mult;	 /* distance multiplier (attenuation/clipK)	*/
+	int		 master_vol; /* 0-255 master volume				*/
+	uint64_t sa_serial;	 /* distinguishes channel reuse, including identical samples */
+	vec3_t	 sa_offset;	 /* emitter-local attachment point for Steam Audio */
+	int		 sa_modelindex;
 } channel_t;
 
 #define WAV_FORMAT_PCM 1
@@ -189,5 +192,7 @@ sfxcache_t *S_LoadSound (sfx_t *s);
 wavinfo_t GetWavinfo (const char *name, byte *wav, int wavlength);
 
 void SND_InitScaletable (void);
+
+#include "snd_steamaudio.h"
 
 #endif /* __QUAKE_SOUND__ */

@@ -1,0 +1,8 @@
+Steam Audio 4.8.1 native SDK, Windows x64 Release
+Source: https://github.com/ValveSoftware/steam-audio
+Revision: 480dd64f513cc8a6437e7d5b9eb0d3f1d30c2fac
+Built from the existing local source checkout with Misc/build-steam-audio.py.
+Local fix: Misc/steam-audio-pffft-alignment.patch
+Features: built-in HRTF, default CPU ray tracer, PFFFT convolution, libmysofa
+Disabled: IPP, Embree, Radeon Rays, TrueAudio Next, samples, tests, documentation
+phonon.dll SHA256: 2300d51981ae59944e807d5c37ccf7cb50d2dac0fe1fa6ecddcfcabaadf3b830

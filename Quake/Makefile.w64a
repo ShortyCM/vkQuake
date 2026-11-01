@@ -109,6 +109,11 @@ dll:
 	      ${MSYSTEM_PREFIX}/bin/libvorbis-0.dll \
 	      ${MSYSTEM_PREFIX}/bin/libiconv-2.dll \
 	      ${MSYSTEM_PREFIX}/bin/libopus-0.dll .
+ifneq ($(STEAMAUDIO_LIBRARY),)
+	cp "$(STEAMAUDIO_LIBRARY)" phonon.dll
+	cp ../ThirdParty/SteamAudio/LICENSE.md SteamAudio-LICENSE.txt
+	cp ../ThirdParty/SteamAudio/THIRDPARTY.md SteamAudio-THIRDPARTY.txt
+endif
 
 release: vkQuake.exe
 debug:

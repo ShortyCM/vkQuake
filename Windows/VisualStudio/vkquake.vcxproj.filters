@@ -76,6 +76,9 @@
     <ClCompile Include="..\..\Quake\snd_dma.c">
       <Filter>Sound</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\Quake\snd_steamaudio.c">
+      <Filter>Sound</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\Quake\snd_flac.c">
       <Filter>Sound</Filter>
     </ClCompile>
@@ -1096,6 +1099,12 @@
       <Filter>Sound</Filter>
     </ClInclude>
     <ClInclude Include="..\..\Quake\q_sound.h">
+      <Filter>Sound</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Quake\snd_steamaudio.h">
+      <Filter>Sound</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Quake\snd_steamaudio_api.h">
       <Filter>Sound</Filter>
     </ClInclude>
     <ClInclude Include="..\..\Quake\render.h">

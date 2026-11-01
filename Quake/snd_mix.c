@@ -449,13 +449,17 @@ void S_PaintChannels (int endtime)
 		end = endtime;
 		if (endtime - paintedtime > PAINTBUFFER_SIZE)
 			end = paintedtime + PAINTBUFFER_SIZE;
+		if (S_SteamAudio_Active ())
+			end = paintedtime + STEAMAUDIO_FRAME_SIZE;
 
 		// clear the paint buffer
 		memset (paintbuffer, 0, (end - paintedtime) * sizeof (portable_samplepair_t));
 
 		// paint in the channels.
+		if (S_SteamAudio_Active ())
+			S_SteamAudio_Mix (paintbuffer, pause_loops);
 		ch = snd_channels;
-		for (i = 0; i < total_channels; i++, ch++)
+		for (i = 0; !S_SteamAudio_Active () && i < total_channels; i++, ch++)
 		{
 			if (!ch->sfx)
 				continue;
@@ -515,7 +519,8 @@ void S_PaintChannels (int endtime)
 		}
 
 		// apply a lowpass filter
-		if (sndspeed.value == 11025 && shm->speed == 44100)
+		// The legacy decimating filter would destroy the HRTF's ear delays.
+		if (!S_SteamAudio_Active () && sndspeed.value == 11025 && shm->speed == 44100)
 		{
 			static filter_t memory_l, memory_r;
 			S_LowpassFilter ((int *)paintbuffer, 2, end - paintedtime, &memory_l);
@@ -547,7 +552,9 @@ void S_PaintChannels (int endtime)
 		}
 
 		// transfer out according to DMA format
+		SNDDMA_LockBuffer ();
 		S_TransferPaintBuffer (end);
+		SNDDMA_Submit ();
 		paintedtime = end;
 	}
 }

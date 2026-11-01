@@ -98,15 +98,23 @@ LIBS := $(COMMON_LIBS) $(CODECLIBS)
 # ---------------------------
 # targets / rules
 # ---------------------------
-all: $(BINTOC_EXE) .WAIT $(DEFAULT_TARGET)
+all: $(BINTOC_EXE) .WAIT $(DEFAULT_TARGET) steamaudio-runtime
 
 vkquake: $(SHADER_OBJS) $(OBJS)
 	$(LINKER) $(SHADER_OBJS) $(OBJS) $(LDFLAGS) $(LIBS) $(SDL_LIBS) -o $@
 
+.PHONY: steamaudio-runtime
+steamaudio-runtime:
+ifneq ($(STEAMAUDIO_LIBRARY),)
+	cp "$(STEAMAUDIO_LIBRARY)" .
+	cp ../ThirdParty/SteamAudio/LICENSE.md SteamAudio-LICENSE.txt
+	cp ../ThirdParty/SteamAudio/THIRDPARTY.md SteamAudio-THIRDPARTY.txt
+endif
+
 #Never strip, we want stack traces	
 #	$(call DO_STRIP,$@)
 
-release: vkquake
+release: vkquake steamaudio-runtime
 debug:
 	$(error Use "make DEBUG=1")
 
@@ -126,3 +134,8 @@ INSTALL_PROGRAM ?= $(INSTALL)
 INSTALL_DATA ?= ${INSTALL} -m 644
 install: vkquake
 	$(INSTALL_PROGRAM) $(CURDIR)/vkquake $(DESTDIR)$(bindir)/vkquake
+ifneq ($(STEAMAUDIO_LIBRARY),)
+	$(INSTALL_PROGRAM) "$(STEAMAUDIO_LIBRARY)" $(DESTDIR)$(bindir)/$(notdir $(STEAMAUDIO_LIBRARY))
+	$(INSTALL_DATA) ../ThirdParty/SteamAudio/LICENSE.md $(DESTDIR)$(bindir)/SteamAudio-LICENSE.txt
+	$(INSTALL_DATA) ../ThirdParty/SteamAudio/THIRDPARTY.md $(DESTDIR)$(bindir)/SteamAudio-THIRDPARTY.txt
+endif

@@ -97,6 +97,9 @@ dll:
 	fi
 	cp ../Windows/codecs/x64/*.dll .
 	cp ../Windows/SDL3/lib64/*.dll .
+	cp ../ThirdParty/SteamAudio/lib/windows-x64/phonon.dll .
+	cp ../ThirdParty/SteamAudio/LICENSE.md SteamAudio-LICENSE.txt
+	cp ../ThirdParty/SteamAudio/THIRDPARTY.md SteamAudio-THIRDPARTY.txt
 
 release: vkQuake.exe
 debug:

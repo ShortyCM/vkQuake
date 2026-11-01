@@ -199,6 +199,21 @@ shader_variants = [
 
 fs = import('fs')
 
+# The native SDK is loaded at runtime so Stereo also works when it is absent.
+# Use a user-built SDK on Unix/ARM; the Windows x64 runtime is bundled.
+steam_audio_library = get_option('steam_audio_library')
+if steam_audio_library == '' and host_machine.system() == 'windows' and host_machine.cpu_family() == 'x86_64'
+    steam_audio_library = 'ThirdParty/SteamAudio/lib/windows-x64/phonon.dll'
+endif
+if steam_audio_library != ''
+    if not fs.is_file(steam_audio_library)
+        error('Steam Audio library not found: ' + steam_audio_library)
+    endif
+    configure_file(input : steam_audio_library, output : fs.name(steam_audio_library), copy : true)
+    configure_file(input : 'ThirdParty/SteamAudio/LICENSE.md', output : 'SteamAudio-LICENSE.txt', copy : true)
+    configure_file(input : 'ThirdParty/SteamAudio/THIRDPARTY.md', output : 'SteamAudio-THIRDPARTY.txt', copy : true)
+endif
+
 shader_jobs = []
 foreach shader : shaders
     target_env = (shader.contains('sops') or shader.contains('ssao_mip') or shader.contains('_fp16')) ? ['--target-env', 'vulkan1.1'] : []
@@ -300,6 +315,7 @@ srcs = [
     'Quake/snd_dma.c',
     'Quake/snd_mem.c',
     'Quake/snd_mix.c',
+    'Quake/snd_steamaudio.c',
     'Quake/snd_sdl.c',
     'Quake/snd_sdl3.c',
     'Quake/snd_umx.c',

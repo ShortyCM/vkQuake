@@ -133,7 +133,7 @@ MUSIC_OBJS:= bgmusic.o \
 	snd_modplug.o \
 	snd_xmp.o \
 	snd_umx.o
-COMOBJ_SND := snd_dma.o snd_mix.o snd_mem.o $(MUSIC_OBJS)
+COMOBJ_SND := snd_dma.o snd_mix.o snd_mem.o snd_steamaudio.o $(MUSIC_OBJS)
 SYSOBJ_SND := snd_sdl.o snd_sdl3.o
 SYSOBJ_CDA := cd_sdl.o
 SYSOBJ_INPUT := in_sdl.o in_sdl2.o in_sdl3.o
