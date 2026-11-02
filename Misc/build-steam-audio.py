@@ -45,6 +45,8 @@ def main():
     if not git.is_file():
         git = shutil.which("git") or "git"
     run(git, "apply", "--unsafe-paths", "--directory=" + str(core), repo / "Misc/steam-audio-pffft-alignment.patch", cwd=repo)
+    # Speaker gains must interpolate over samples, not output channels.
+    run(git, "apply", "--unsafe-paths", "--directory=" + str(core), repo / "Misc/steam-audio-panning.patch", cwd=repo)
     manifest_path = core / "build/dependencies.json"
     manifest = json.loads(manifest_path.read_text())
     manifest = {k: manifest[k] for k in ("flatbuffers", "pffft", "zlib", "mysofa")}
@@ -79,7 +81,7 @@ def main():
     shutil.copy2(native / "src/core/phonon_version.h", out / "include/phonon_version.h")
     shutil.copy2(source / "LICENSE.md", out / "LICENSE.md")
     shutil.copy2(source / "core/THIRDPARTY.md", out / "THIRDPARTY.md")
-    revision = subprocess.run([str(git), "-C", str(source), "rev-parse", "HEAD"],
+    revision = subprocess.run([str(git), "-c", "safe.directory=" + str(source), "-C", str(source), "rev-parse", "HEAD"],
                               capture_output=True, text=True)
     digest = hashlib.sha256((out / "lib/windows-x64/phonon.dll").read_bytes()).hexdigest()
     (out / "BUILDINFO.txt").write_text(
@@ -88,6 +90,7 @@ def main():
         "Revision: " + (revision.stdout.strip() if revision.returncode == 0 else "local source (git revision unavailable)") + "\n"
         "Build: Misc/build-steam-audio.py\n"
         "Local fix: Misc/steam-audio-pffft-alignment.patch\n"
+        "Local fix: Misc/steam-audio-panning.patch\n"
         "Features: built-in HRTF, default CPU ray tracer, PFFFT convolution, libmysofa\n"
         "Disabled: IPP, Embree, Radeon Rays, TrueAudio Next, samples, tests, documentation\n"
         "phonon.dll SHA256: " + digest + "\n", encoding="utf-8")

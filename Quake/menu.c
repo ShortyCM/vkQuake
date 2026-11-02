@@ -2600,10 +2600,17 @@ enum
 	SOUND_OPT_MUSICEXT,
 	SOUND_OPT_WATERFX,
 	SOUND_OPT_RENDERER,
+	SOUND_OPT_CROSSOVER,
 	SOUND_OPTIONS_ITEMS
 };
 
 static int sound_options_cursor = 0;
+
+static int M_SoundOptions_NumItems (void)
+{
+	const snd_renderer_t renderer = S_SteamAudio_Renderer ();
+	return renderer == SND_RENDERER_5_1 || renderer == SND_RENDERER_7_1 ? SOUND_OPTIONS_ITEMS : SOUND_OPT_CROSSOVER;
+}
 
 static void M_Menu_SoundOptions_f (void)
 {
@@ -2644,13 +2651,18 @@ static void M_SoundOptions_AdjustSliders (int dir, qboolean mouse)
 		break;
 	case SOUND_OPT_RENDERER:
 		if (dir)
-			Cvar_SetValueQuick (&snd_renderer, snd_renderer.value == 1 ? 0 : 1);
+			Cvar_SetValueQuick (&snd_renderer, (S_SteamAudio_Renderer () + SND_RENDERER_COUNT + dir) % SND_RENDERER_COUNT);
+		break;
+	case SOUND_OPT_CROSSOVER:
+		f = M_GetSliderPos (60, 120, S_SteamAudio_Crossover (), false, mouse, clamped_mouse, dir, 10, 1);
+		Cvar_SetValueQuick (&snd_steam_crossover, f);
 		break;
 	}
 }
 
 static void M_SoundOptions_Key (int k)
 {
+	sound_options_cursor = q_min (sound_options_cursor, M_SoundOptions_NumItems () - 1);
 	switch (k)
 	{
 	case K_MOUSE2:
@@ -2671,13 +2683,13 @@ static void M_SoundOptions_Key (int k)
 		S_LocalSound ("misc/menu1.wav");
 		sound_options_cursor--;
 		if (sound_options_cursor < 0)
-			sound_options_cursor = SOUND_OPTIONS_ITEMS - 1;
+			sound_options_cursor = M_SoundOptions_NumItems () - 1;
 		break;
 
 	case K_DOWNARROW:
 		S_LocalSound ("misc/menu1.wav");
 		sound_options_cursor++;
-		if (sound_options_cursor >= SOUND_OPTIONS_ITEMS)
+		if (sound_options_cursor >= M_SoundOptions_NumItems ())
 			sound_options_cursor = 0;
 		break;
 
@@ -2717,11 +2729,24 @@ static void M_SoundOptions_Draw (cb_context_t *cbx)
 	M_DrawCheckbox (cbx, MENU_VALUE_X, top + CHARACTER_SIZE * SOUND_OPT_WATERFX, snd_waterfx.value);
 
 	M_Print (cbx, MENU_LABEL_X, top + CHARACTER_SIZE * SOUND_OPT_RENDERER, "Renderer");
-	M_Print (cbx, MENU_VALUE_X, top + CHARACTER_SIZE * SOUND_OPT_RENDERER, snd_renderer.value == 1 ? "Steam Audio HRTF" : "Stereo");
+	// The full renderer names need their own line within the 320-pixel canvas.
+	M_Print (cbx, MENU_LABEL_X + CHARACTER_SIZE, top + CHARACTER_SIZE * (SOUND_OPT_RENDERER + 1), S_SteamAudio_RendererName (S_SteamAudio_Renderer ()));
+	if (M_SoundOptions_NumItems () == SOUND_OPTIONS_ITEMS)
+	{
+		const int y = top + CHARACTER_SIZE * (SOUND_OPT_CROSSOVER + 1);
+		const int frequency = S_SteamAudio_Crossover ();
+		M_Print (cbx, MENU_LABEL_X, y, "Sub Crossover");
+		M_DrawSlider (cbx, MENU_SLIDER_X, y, (frequency - 60) / 60.0f, va ("%d Hz", frequency));
+	}
 
 	// cursor
-	M_Mouse_UpdateListCursor (&sound_options_cursor, MENU_CURSOR_X, 320, top, CHARACTER_SIZE, SOUND_OPTIONS_ITEMS, 0);
-	Draw_Character (cbx, MENU_CURSOR_X, top + sound_options_cursor * CHARACTER_SIZE, 12 + ((int)(realtime * 4) & 1));
+	M_Mouse_UpdateListCursor (&sound_options_cursor, MENU_CURSOR_X, 320, top, CHARACTER_SIZE, SOUND_OPT_RENDERER + 1, 0);
+	M_Mouse_UpdateCursor (&sound_options_cursor, MENU_CURSOR_X, 320, top + CHARACTER_SIZE * (SOUND_OPT_RENDERER + 1), CHARACTER_SIZE, SOUND_OPT_RENDERER);
+	if (M_SoundOptions_NumItems () == SOUND_OPTIONS_ITEMS)
+		M_Mouse_UpdateCursor (&sound_options_cursor, MENU_CURSOR_X, 320, top + CHARACTER_SIZE * (SOUND_OPT_CROSSOVER + 1), CHARACTER_SIZE, SOUND_OPT_CROSSOVER);
+	sound_options_cursor = q_min (sound_options_cursor, M_SoundOptions_NumItems () - 1);
+	const int cursor_row = sound_options_cursor + (sound_options_cursor == SOUND_OPT_CROSSOVER);
+	Draw_Character (cbx, MENU_CURSOR_X, top + cursor_row * CHARACTER_SIZE, 12 + ((int)(realtime * 4) & 1));
 }
 
 //=============================================================================
@@ -5534,7 +5559,10 @@ void M_UpdateMouse (void)
 			M_GameOptions_AdjustSliders (0, true);
 		else if (keydown[K_MOUSE1] && (m_state == m_graphics) && graphic_option_has_sliders)
 			M_GraphicsOptions_AdjustSliders (0, true);
-		else if (keydown[K_MOUSE1] && (m_state == m_sound) && (sound_options_cursor >= SOUND_OPT_SNDVOL) && (sound_options_cursor <= SOUND_OPT_MUSICVOL))
+		else if (
+			keydown[K_MOUSE1] && (m_state == m_sound) &&
+			(((sound_options_cursor >= SOUND_OPT_SNDVOL) && (sound_options_cursor <= SOUND_OPT_MUSICVOL)) ||
+			 (sound_options_cursor == SOUND_OPT_CROSSOVER && M_SoundOptions_NumItems () == SOUND_OPTIONS_ITEMS)))
 			M_SoundOptions_AdjustSliders (0, true);
 		else
 			slider_grab = false;

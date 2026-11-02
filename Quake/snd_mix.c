@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // snd_mix.c -- portable code to mix sounds for snd_dma.c
 
 #include "quakedef.h"
+#include "snd_crossover.h"
 
 #define PAINTBUFFER_SIZE 2048
 static portable_samplepair_t paintbuffer[PAINTBUFFER_SIZE];
@@ -29,9 +30,12 @@ static int					 snd_scaletable[32][256];
 static int					*snd_p, snd_linear_count;
 static short				*snd_out;
 
-static int	 snd_vol;
-static float snd_lofreqlevel;
-static float snd_hifreqlevel;
+static int					  snd_vol;
+static float				  snd_lofreqlevel;
+static float				  snd_hifreqlevel;
+static snd_crossover_coeffs_t music_crossover_coeffs;
+static snd_crossover_t		  music_crossover[2];
+static int					  music_crossover_rate, music_crossover_frequency, music_crossover_channels;
 
 static void Snd_WriteLinearBlastStereo16 (void)
 {
@@ -345,8 +349,8 @@ static struct
 {
 	float intensity;
 	float alpha;
-	float accum[2];
-} underwater = {0.f, 1.f, {0.f, 0.f}};
+	float accum[STEAMAUDIO_MAX_CHANNELS];
+} underwater = {0.f, 1.f, {0.f}};
 
 extern cvar_t snd_waterfx;
 
@@ -418,6 +422,88 @@ void S_ClearFilteredLevels (void)
 {
 	snd_lofreqlevel = 0.f;
 	snd_hifreqlevel = 0.f;
+	memset (underwater.accum, 0, sizeof (underwater.accum));
+	memset (music_crossover, 0, sizeof (music_crossover));
+	music_crossover_rate = music_crossover_frequency = music_crossover_channels = 0;
+}
+
+static void S_PaintSteamAudio (qboolean pause_loops)
+{
+	static int	   buffer[STEAMAUDIO_FRAME_SIZE][STEAMAUDIO_MAX_CHANNELS];
+	const int	   channels = shm->channels;
+	const int	   frames = shm->samples / channels;
+	const qboolean bass = channels == 6 || channels == 8;
+	const int	   frequency = S_SteamAudio_Crossover ();
+	if (bass && (music_crossover_rate != shm->speed || music_crossover_frequency != frequency || music_crossover_channels != channels))
+	{
+		S_Crossover_Init (&music_crossover_coeffs, shm->speed, frequency);
+		memset (music_crossover, 0, sizeof (music_crossover));
+		music_crossover_rate = shm->speed;
+		music_crossover_frequency = frequency;
+		music_crossover_channels = channels;
+	}
+	S_SteamAudio_Mix (buffer, pause_loops);
+	for (int i = 0; i < STEAMAUDIO_FRAME_SIZE; i++)
+	{
+		float level = 0;
+		for (int channel = 0; channel < channels; channel++)
+		{
+			int sample = CLAMP (-32768 * 256, buffer[i][channel], 32767 * 256) / 2;
+			if (underwater.intensity)
+			{
+				underwater.accum[channel] += underwater.alpha * (sample - underwater.accum[channel]);
+				sample = (int)underwater.accum[channel];
+			}
+			else
+				underwater.accum[channel] = sample;
+			buffer[i][channel] = sample;
+			level += fabsf ((float)sample);
+		}
+		if (snd_vol > 0)
+		{
+			level /= channels * snd_vol * 32768.f;
+			snd_lofreqlevel += (level - snd_lofreqlevel) * 1e-3f;
+			snd_hifreqlevel += (level - snd_hifreqlevel) * 1e-2f;
+		}
+		double music_left = 0, music_right = 0;
+		if (paintedtime + i < s_rawend)
+		{
+			const int raw = (paintedtime + i) & (MAX_RAW_SAMPLES - 1);
+			music_left = s_rawsamples[raw].left / 2;
+			music_right = s_rawsamples[raw].right / 2;
+		}
+		if (bass)
+		{
+			const snd_crossover_stereo_t music = S_Crossover_Stereo (&music_crossover_coeffs, music_crossover, music_left, music_right);
+			buffer[i][0] += (int)music.left;
+			buffer[i][1] += (int)music.right;
+			buffer[i][3] += (int)music.bass;
+		}
+		else
+		{
+			buffer[i][0] += (int)music_left;
+			buffer[i][1] += (int)music_right;
+		}
+	}
+	if (snd_vol <= 0)
+		snd_lofreqlevel = snd_hifreqlevel = 0.f;
+
+	SNDDMA_LockBuffer ();
+	for (int i = 0; i < STEAMAUDIO_FRAME_SIZE; i++)
+	{
+		const int output = ((paintedtime + i) & (frames - 1)) * channels;
+		for (int channel = 0; channel < channels; channel++)
+		{
+			const int sample = CLAMP (SHRT_MIN, buffer[i][channel] / 256, SHRT_MAX);
+			if (shm->samplebits == 16)
+				((short *)shm->buffer)[output + channel] = sample;
+			else if (shm->signed8)
+				((signed char *)shm->buffer)[output + channel] = sample / 256;
+			else
+				shm->buffer[output + channel] = sample / 256 + 128;
+		}
+	}
+	SNDDMA_Submit ();
 }
 
 /*
@@ -445,19 +531,21 @@ void S_PaintChannels (int endtime)
 
 	while (paintedtime < endtime)
 	{
+		if (S_SteamAudio_Active ())
+		{
+			S_PaintSteamAudio (pause_loops);
+			paintedtime += STEAMAUDIO_FRAME_SIZE;
+			continue;
+		}
 		// if paintbuffer is smaller than DMA buffer
 		end = endtime;
 		if (endtime - paintedtime > PAINTBUFFER_SIZE)
 			end = paintedtime + PAINTBUFFER_SIZE;
-		if (S_SteamAudio_Active ())
-			end = paintedtime + STEAMAUDIO_FRAME_SIZE;
 
 		// clear the paint buffer
 		memset (paintbuffer, 0, (end - paintedtime) * sizeof (portable_samplepair_t));
 
 		// paint in the channels.
-		if (S_SteamAudio_Active ())
-			S_SteamAudio_Mix (paintbuffer, pause_loops);
 		ch = snd_channels;
 		for (i = 0; !S_SteamAudio_Active () && i < total_channels; i++, ch++)
 		{

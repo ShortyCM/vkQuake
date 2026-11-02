@@ -1104,6 +1104,9 @@
     <ClInclude Include="..\..\Quake\snd_steamaudio.h">
       <Filter>Sound</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\Quake\snd_crossover.h">
+      <Filter>Sound</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\Quake\snd_steamaudio_api.h">
       <Filter>Sound</Filter>
     </ClInclude>

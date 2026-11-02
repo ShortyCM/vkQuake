@@ -19,6 +19,10 @@
     X(void, iplDirectEffectReset, (IPLDirectEffect effect)) \
     X(IPLerror, iplHRTFCreate, (IPLContext context, IPLAudioSettings* audioSettings, IPLHRTFSettings* hrtfSettings, IPLHRTF* hrtf)) \
     X(void, iplHRTFRelease, (IPLHRTF* hrtf)) \
+    X(IPLAudioEffectState, iplPanningEffectApply, (IPLPanningEffect effect, IPLPanningEffectParams* params, IPLAudioBuffer* in, IPLAudioBuffer* out)) \
+    X(IPLerror, iplPanningEffectCreate, (IPLContext context, IPLAudioSettings* audioSettings, IPLPanningEffectSettings* effectSettings, IPLPanningEffect* effect)) \
+    X(void, iplPanningEffectRelease, (IPLPanningEffect* effect)) \
+    X(void, iplPanningEffectReset, (IPLPanningEffect effect)) \
     X(void, iplInstancedMeshAdd, (IPLInstancedMesh instancedMesh, IPLScene scene)) \
     X(IPLerror, iplInstancedMeshCreate, (IPLScene scene, IPLInstancedMeshSettings* settings, IPLInstancedMesh* instancedMesh)) \
     X(void, iplInstancedMeshRelease, (IPLInstancedMesh* instancedMesh)) \
@@ -98,6 +102,10 @@ static qboolean SA_LoadFunctions (void *library)
 #define iplDirectEffectReset sa_iplDirectEffectReset
 #define iplHRTFCreate sa_iplHRTFCreate
 #define iplHRTFRelease sa_iplHRTFRelease
+#define iplPanningEffectApply sa_iplPanningEffectApply
+#define iplPanningEffectCreate sa_iplPanningEffectCreate
+#define iplPanningEffectRelease sa_iplPanningEffectRelease
+#define iplPanningEffectReset sa_iplPanningEffectReset
 #define iplInstancedMeshAdd sa_iplInstancedMeshAdd
 #define iplInstancedMeshCreate sa_iplInstancedMeshCreate
 #define iplInstancedMeshRelease sa_iplInstancedMeshRelease

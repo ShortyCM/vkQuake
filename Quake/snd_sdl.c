@@ -30,8 +30,7 @@ static int buffersize;
 
 static void SDLCALL paint_audio (void *unused, Uint8 *stream, int len)
 {
-	int pos, tobufend;
-	int len1, len2;
+	int pos;
 
 	if (!shm)
 	{ /* shouldn't happen, but just in case */
@@ -43,36 +42,21 @@ static void SDLCALL paint_audio (void *unused, Uint8 *stream, int len)
 	if (pos >= buffersize)
 		shm->samplepos = pos = 0;
 
-	tobufend = buffersize - pos; /* bytes to buffer's end. */
-	len1 = len;
-	len2 = 0;
-
-	if (len1 > tobufend)
+	while (len > 0)
 	{
-		len1 = tobufend;
-		len2 = len - len1;
+		const int count = q_min (len, buffersize - pos);
+		memcpy (stream, shm->buffer + pos, count);
+		stream += count;
+		len -= count;
+		pos = (pos + count) % buffersize;
 	}
-
-	memcpy (stream, shm->buffer + pos, len1);
-
-	if (len2 <= 0)
-	{
-		shm->samplepos += (len1 / (shm->samplebits / 8));
-	}
-	else
-	{ /* wraparound? */
-		memcpy (stream + len1, shm->buffer, len2);
-		shm->samplepos = (len2 / (shm->samplebits / 8));
-	}
-
-	if (shm->samplepos >= buffersize)
-		shm->samplepos = 0;
+	shm->samplepos = pos / (shm->samplebits / 8);
 }
 
 qboolean SNDDMA_Init (dma_t *dma)
 {
 	SDL_AudioSpec desired;
-	int			  tmp, val;
+	int			  tmp;
 	char		  drivername[128];
 
 	if (SDL_InitSubSystem (SDL_INIT_AUDIO) < 0)
@@ -84,7 +68,7 @@ qboolean SNDDMA_Init (dma_t *dma)
 	/* Set up the desired format */
 	desired.freq = snd_mixspeed.value;
 	desired.format = (loadas8bit.value) ? AUDIO_U8 : AUDIO_S16SYS;
-	desired.channels = 2; /* = desired_channels; */
+	desired.channels = S_SteamAudio_OutputChannels ();
 	if (desired.freq <= 11025)
 		desired.samples = 256;
 	else if (desired.freq <= 22050)
@@ -117,16 +101,8 @@ qboolean SNDDMA_Init (dma_t *dma)
 	shm->signed8 = (desired.format == AUDIO_S8);
 	shm->speed = desired.freq;
 	shm->channels = desired.channels;
-	tmp = (desired.samples * desired.channels) * 10;
-	if (tmp & (tmp - 1))
-	{ /* make it a power of two */
-		val = 1;
-		while (val < tmp)
-			val <<= 1;
-
-		tmp = val;
-	}
-	shm->samples = tmp;
+	tmp = Q_nextPow2 (desired.samples * 10);
+	shm->samples = tmp * desired.channels;
 	shm->samplepos = 0;
 	shm->submission_chunk = 1;
 

@@ -31,7 +31,7 @@ static SDL_AudioStream *audio_stream = NULL;
 
 static void SDLCALL paint_audio (void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
-	int pos, len1, len2, tobufend;
+	int pos;
 
 	if (!shm || additional_amount <= 0)
 		return;
@@ -40,30 +40,15 @@ static void SDLCALL paint_audio (void *userdata, SDL_AudioStream *stream, int ad
 	if (pos >= buffersize)
 		shm->samplepos = pos = 0;
 
-	tobufend = buffersize - pos;
-	len1 = additional_amount;
-	len2 = 0;
-
-	if (len1 > tobufend)
+	while (additional_amount > 0)
 	{
-		len1 = tobufend;
-		len2 = additional_amount - len1;
+		const int count = q_min (additional_amount, buffersize - pos);
+		if (!SDL_PutAudioStreamData (stream, shm->buffer + pos, count))
+			break;
+		additional_amount -= count;
+		pos = (pos + count) % buffersize;
 	}
-
-	SDL_PutAudioStreamData (stream, shm->buffer + pos, len1);
-
-	if (len2 > 0)
-	{
-		SDL_PutAudioStreamData (stream, shm->buffer, len2);
-		shm->samplepos = (len2 / (shm->samplebits / 8));
-	}
-	else
-	{
-		shm->samplepos += (len1 / (shm->samplebits / 8));
-	}
-
-	if (shm->samplepos >= shm->samples)
-		shm->samplepos = 0;
+	shm->samplepos = pos / (shm->samplebits / 8);
 }
 
 qboolean SNDDMA_Init (dma_t *dma)
@@ -80,7 +65,7 @@ qboolean SNDDMA_Init (dma_t *dma)
 	/* Set up the desired format */
 	spec.freq = snd_mixspeed.value;
 	spec.format = (loadas8bit.value) ? SDL_AUDIO_U8 : SDL_AUDIO_S16;
-	spec.channels = 2;
+	spec.channels = S_SteamAudio_OutputChannels ();
 
 	/* Open the audio device with callback */
 	audio_stream = SDL_OpenAudioDeviceStream (SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, paint_audio, NULL);
@@ -101,8 +86,8 @@ qboolean SNDDMA_Init (dma_t *dma)
 	shm->channels = spec.channels;
 
 	/* Calculate buffer size - aim for ~100ms of audio */
-	int num_samples = (spec.channels * spec.freq) / 10;
-	num_samples = Q_nextPow2 (num_samples);
+	// Keep the number of frames a power of two, including six-channel 5.1.
+	int num_samples = Q_nextPow2 (spec.freq / 10) * spec.channels;
 
 	shm->samples = num_samples;
 	shm->samplepos = 0;

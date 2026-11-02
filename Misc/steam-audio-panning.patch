@@ -1,0 +1,9 @@
+--- a/src/core/panning_effect.cpp
++++ b/src/core/panning_effect.cpp
+@@ -71,5 +71,5 @@
+         {
+             // Crossfade between the panning coefficients for the previous frame and the
+             // current frame.
+-            auto alpha = static_cast<float>(i) / static_cast<float>(in.numSamples());
++            auto alpha = static_cast<float>(j) / static_cast<float>(in.numSamples());
+             auto blendedWeight = alpha * weight + (1.0f - alpha) * weightPrev;

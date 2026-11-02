@@ -6,11 +6,12 @@
  * owns the scenes, simulators, probes and their inputs. The mailbox mutex only
  * protects snapshot/result copies, never a bake or a simulation. Reflection IRs
  * use the SDK's internal triple buffer; path coefficients are copied by value.
- * All voices have direct simulation and HRTF. The loudest voices additionally
+ * All voices have direct simulation and headphone or speaker spatialization. The loudest voices additionally
  * have individual reflections/pathing; the remainder feed listener reverb.
  */
 #include "quakedef.h"
 #include "snd_steamaudio.h"
+#include "snd_crossover.h"
 #include "../ThirdParty/SteamAudio/include/phonon.h"
 #include "snd_steamaudio_api.h"
 #ifdef _WIN32
@@ -27,7 +28,41 @@
 #define SA_CACHE_VERSION   2
 #define SA_MAX_PROBES	   2048
 
-cvar_t		  snd_renderer = {"snd_renderer", "0", CVAR_ARCHIVE};
+cvar_t snd_renderer = {"snd_renderer", "0", CVAR_ARCHIVE};
+cvar_t snd_steam_crossover = {"snd_steam_crossover", "80", CVAR_ARCHIVE};
+
+int S_SteamAudio_Crossover (void)
+{
+	return S_Crossover_Frequency (snd_steam_crossover.value);
+}
+
+static void SA_CrossoverChanged (cvar_t *variable)
+{
+	const int frequency = S_SteamAudio_Crossover ();
+	if (variable->value != frequency)
+		Cvar_SetValueQuick (variable, frequency);
+}
+
+snd_renderer_t S_SteamAudio_Renderer (void)
+{
+	if (!isfinite (snd_renderer.value) || snd_renderer.value < 0 || snd_renderer.value >= SND_RENDERER_COUNT)
+		return SND_RENDERER_STANDARD;
+	return (snd_renderer_t)(int)snd_renderer.value;
+}
+
+const char *S_SteamAudio_RendererName (snd_renderer_t renderer)
+{
+	static const char *names[SND_RENDERER_COUNT] = {"Standard stereo speakers", "Steam Audio HRTF Headphones", "Steam Audio Stereo Speakers",
+													"Steam Audio 4.0 Speakers", "Steam Audio 5.1 Speakers",	   "Steam Audio 7.1 Speakers"};
+	return names[renderer >= 0 && renderer < SND_RENDERER_COUNT ? renderer : SND_RENDERER_STANDARD];
+}
+
+int S_SteamAudio_OutputChannels (void)
+{
+	static const int channels[SND_RENDERER_COUNT] = {2, 2, 2, 4, 6, 8};
+	return channels[S_SteamAudio_Renderer ()];
+}
+
 static cvar_t sa_occlusion = {"snd_steam_occlusion", "1", CVAR_ARCHIVE};
 static cvar_t sa_transmission = {"snd_steam_transmission", "1", CVAR_ARCHIVE};
 static cvar_t sa_reflections = {"snd_steam_reflections", "1", CVAR_ARCHIVE};
@@ -94,7 +129,9 @@ typedef struct
 typedef struct
 {
 	IPLBinauralEffect binaural;
+	IPLPanningEffect  panning;
 	IPLDirectEffect	  direct;
+	snd_crossover_t	  crossover;
 	uint64_t		  serial;
 	IPLVector3		  direction;
 	int				  tail;
@@ -125,7 +162,14 @@ static struct
 	IPLContext				  context;
 	IPLHRTF					  hrtf;
 	IPLAudioSettings		  audio;
+	snd_renderer_t			  renderer;
+	int						  channels;
+	IPLSpeakerLayout		  speaker_layout;
 	IPLAmbisonicsDecodeEffect decode;
+	IPLAmbisonicsDecodeEffect bass_decode;
+	snd_crossover_coeffs_t	  crossover;
+	snd_crossover_t			  indirect_crossover[SA_AMBI_CHANNELS];
+	int						  crossover_frequency;
 	sa_voice_t				  voices[MAX_CHANNELS];
 	sa_indirect_voice_t		  indirect[SA_MAX_REFLECTIONS + 1];
 	SDL_Mutex				 *mutex;
@@ -154,10 +198,10 @@ static sa_indirect_result_t sa_mix_indirect[SA_MAX_REFLECTIONS + 1];
 static float				sa_mono[MAX_CHANNELS][STEAMAUDIO_FRAME_SIZE];
 static float				sa_reverb_input[STEAMAUDIO_FRAME_SIZE];
 static float				sa_direct_buffer[STEAMAUDIO_FRAME_SIZE];
-static float				sa_stereo[2][STEAMAUDIO_FRAME_SIZE];
+static float				sa_output[STEAMAUDIO_MAX_CHANNELS][STEAMAUDIO_FRAME_SIZE];
 static float				sa_ambi[SA_AMBI_CHANNELS][STEAMAUDIO_FRAME_SIZE];
 static float				sa_wet[SA_AMBI_CHANNELS][STEAMAUDIO_FRAME_SIZE];
-static float				sa_mix[2][STEAMAUDIO_FRAME_SIZE];
+static float				sa_mix[STEAMAUDIO_MAX_CHANNELS][STEAMAUDIO_FRAME_SIZE];
 
 static IPLVector3 SA_Vector (const vec3_t v)
 {
@@ -889,7 +933,7 @@ failed:
 	sa.failed = true;
 	sa.quit = true;
 	SDL_UnlockMutex (sa.mutex);
-	SA_Message ("could not create acoustic simulation; returning to Stereo");
+	SA_Message ("could not create acoustic simulation; using Standard stereo speakers");
 done:
 	if (bake_thread)
 	{
@@ -1141,10 +1185,13 @@ void S_SteamAudio_Reset (void)
 	{
 		if (sa.voices[i].binaural)
 			iplBinauralEffectReset (sa.voices[i].binaural);
+		if (sa.voices[i].panning)
+			iplPanningEffectReset (sa.voices[i].panning);
 		if (sa.voices[i].direct)
 			iplDirectEffectReset (sa.voices[i].direct);
 		sa.voices[i].serial = 0;
 		sa.voices[i].tail = 0;
+		S_Crossover_Reset (&sa.voices[i].crossover);
 	}
 	for (int i = 0; i <= sa.num_reflections; i++)
 	{
@@ -1157,6 +1204,10 @@ void S_SteamAudio_Reset (void)
 	}
 	if (sa.decode)
 		iplAmbisonicsDecodeEffectReset (sa.decode);
+	if (sa.bass_decode)
+		iplAmbisonicsDecodeEffectReset (sa.bass_decode);
+	memset (sa.indirect_crossover, 0, sizeof (sa.indirect_crossover));
+	sa.crossover_frequency = 0;
 }
 
 void S_SteamAudio_ClearMap (void)
@@ -1202,6 +1253,7 @@ void S_SteamAudio_Shutdown (void)
 		for (int i = 0; i < MAX_CHANNELS; i++)
 		{
 			iplBinauralEffectRelease (&sa.voices[i].binaural);
+			iplPanningEffectRelease (&sa.voices[i].panning);
 			iplDirectEffectRelease (&sa.voices[i].direct);
 		}
 		for (int i = 0; i <= sa.num_reflections; i++)
@@ -1210,6 +1262,7 @@ void S_SteamAudio_Shutdown (void)
 			iplPathEffectRelease (&sa.indirect[i].path);
 		}
 		iplAmbisonicsDecodeEffectRelease (&sa.decode);
+		iplAmbisonicsDecodeEffectRelease (&sa.bass_decode);
 		iplHRTFRelease (&sa.hrtf);
 		iplContextRelease (&sa.context);
 	}
@@ -1240,7 +1293,7 @@ static qboolean SA_Init (void)
 		sa.library = SDL_LoadObject (filename);
 	if (!sa.library)
 	{
-		Con_Warning ("Steam Audio runtime unavailable (%s): %s. Using Stereo.\n", filename, SDL_GetError ());
+		Con_Warning ("Steam Audio runtime unavailable (%s): %s. Using Standard stereo speakers.\n", filename, SDL_GetError ());
 		return false;
 	}
 	if (!SA_LoadFunctions (sa.library))
@@ -1257,17 +1310,32 @@ static qboolean SA_Init (void)
 		goto failed;
 	sa.audio.samplingRate = shm->speed;
 	sa.audio.frameSize = STEAMAUDIO_FRAME_SIZE;
-	IPLHRTFSettings hrtf_settings = {0};
-	hrtf_settings.type = IPL_HRTFTYPE_DEFAULT;
-	hrtf_settings.volume = 1;
-	if (iplHRTFCreate (sa.context, &sa.audio, &hrtf_settings, &sa.hrtf) != IPL_STATUS_SUCCESS)
-		goto failed;
+	sa.renderer = S_SteamAudio_Renderer ();
+	sa.channels = S_SteamAudio_OutputChannels ();
+	const IPLSpeakerLayoutType layouts[SND_RENDERER_COUNT] = {IPL_SPEAKERLAYOUTTYPE_STEREO,		  IPL_SPEAKERLAYOUTTYPE_STEREO,
+															  IPL_SPEAKERLAYOUTTYPE_STEREO,		  IPL_SPEAKERLAYOUTTYPE_QUADRAPHONIC,
+															  IPL_SPEAKERLAYOUTTYPE_SURROUND_5_1, IPL_SPEAKERLAYOUTTYPE_SURROUND_7_1};
+	sa.speaker_layout.type = layouts[sa.renderer];
+	if (sa.renderer == SND_RENDERER_HRTF)
+	{
+		IPLHRTFSettings hrtf_settings = {0};
+		hrtf_settings.type = IPL_HRTFTYPE_DEFAULT;
+		hrtf_settings.volume = 1;
+		if (iplHRTFCreate (sa.context, &sa.audio, &hrtf_settings, &sa.hrtf) != IPL_STATUS_SUCCESS)
+			goto failed;
+	}
 	IPLAmbisonicsDecodeEffectSettings decode_settings = {0};
-	decode_settings.speakerLayout.type = IPL_SPEAKERLAYOUTTYPE_STEREO;
+	decode_settings.speakerLayout = sa.speaker_layout;
 	decode_settings.hrtf = sa.hrtf;
 	decode_settings.maxOrder = SA_ORDER;
 	if (iplAmbisonicsDecodeEffectCreate (sa.context, &sa.audio, &decode_settings, &sa.decode) != IPL_STATUS_SUCCESS)
 		goto failed;
+	if (sa.channels == 6 || sa.channels == 8)
+	{
+		decode_settings.speakerLayout.type = IPL_SPEAKERLAYOUTTYPE_MONO;
+		if (iplAmbisonicsDecodeEffectCreate (sa.context, &sa.audio, &decode_settings, &sa.bass_decode) != IPL_STATUS_SUCCESS)
+			goto failed;
+	}
 	sa.num_reflections = CLAMP (1, (int)sa_sources.value, SA_MAX_REFLECTIONS);
 	for (int i = 0; i <= sa.num_reflections; i++)
 	{
@@ -1286,11 +1354,11 @@ static qboolean SA_Init (void)
 	if (!sa.mutex)
 		goto failed;
 	Con_Printf (
-		"Audio renderer: Steam Audio HRTF (native SDK %d.%d.%d, built-in HRTF, %d Hz)\n", STEAMAUDIO_VERSION_MAJOR, STEAMAUDIO_VERSION_MINOR,
-		STEAMAUDIO_VERSION_PATCH, shm->speed);
+		"Audio renderer: %s (native SDK %d.%d.%d, %d channels, %d Hz%s)\n", S_SteamAudio_RendererName (sa.renderer), STEAMAUDIO_VERSION_MAJOR,
+		STEAMAUDIO_VERSION_MINOR, STEAMAUDIO_VERSION_PATCH, sa.channels, shm->speed, sa.renderer == SND_RENDERER_HRTF ? ", built-in HRTF" : "");
 	return true;
 failed:
-	Con_Warning ("Steam Audio initialization failed. Using Stereo.\n");
+	Con_Warning ("Steam Audio initialization failed. Using Standard stereo speakers.\n");
 	S_SteamAudio_Shutdown ();
 	return false;
 }
@@ -1304,19 +1372,23 @@ void S_SteamAudio_Update (void)
 {
 	if (!shm)
 		return;
-	if (snd_renderer.value != 1)
+	snd_renderer_t renderer = S_SteamAudio_Renderer ();
+	if (snd_renderer.value != renderer)
+		Cvar_SetValueQuick (&snd_renderer, renderer);
+	if (renderer == SND_RENDERER_STANDARD)
 	{
 		if (sa.context)
 		{
 			S_SteamAudio_Shutdown ();
 			S_ClearBuffer ();
-			Con_Printf ("Audio renderer: Stereo\n");
+			Con_Printf ("Audio renderer: %s\n", S_SteamAudio_RendererName (renderer));
 		}
 		if (snd_renderer.value != 0)
 			Cvar_SetValueQuick (&snd_renderer, 0);
 		return;
 	}
-	if (sa.context && (sa.audio.samplingRate != shm->speed || sa.num_reflections != CLAMP (1, (int)sa_sources.value, SA_MAX_REFLECTIONS)))
+	if (sa.context &&
+		(sa.renderer != renderer || sa.audio.samplingRate != shm->speed || sa.num_reflections != CLAMP (1, (int)sa_sources.value, SA_MAX_REFLECTIONS)))
 		S_SteamAudio_Shutdown ();
 	if (!sa.context)
 	{
@@ -1368,12 +1440,15 @@ static void SA_Info (void)
 {
 	if (!sa.context)
 	{
-		Con_Printf ("Audio renderer: Stereo (snd_renderer 1 selects Steam Audio HRTF)\n");
+		Con_Printf ("Audio renderer: %s\n", S_SteamAudio_RendererName (SND_RENDERER_STANDARD));
 		return;
 	}
 	SDL_LockMutex (sa.mutex);
 	Con_Printf (
-		"Steam Audio HRTF: %d Hz, %d samples, %d indirect voices + listener reverb\n", sa.audio.samplingRate, STEAMAUDIO_FRAME_SIZE, sa.num_reflections);
+		"%s: %d Hz, %d samples, %d channels, %d indirect voices + listener reverb\n", S_SteamAudio_RendererName (sa.renderer), sa.audio.samplingRate,
+		STEAMAUDIO_FRAME_SIZE, sa.channels, sa.num_reflections);
+	if (sa.bass_decode)
+		Con_Printf ("Bass crossover: %d Hz, 24 dB/octave Linkwitz-Riley\n", S_SteamAudio_Crossover ());
 	Con_Printf (
 		"Acoustics: %d triangles, %d moving brushes, %d probes; %s; cache %s (%d%%)\n", sa.triangles, sa.instances, sa.probes,
 		sa.ready ? "simulation ready" : "preparing scene", sa.cache_hit ? "loaded" : "generated", sa.progress);
@@ -1399,6 +1474,9 @@ void S_SteamAudio_Register (void)
 						   &sa_rays,	  &sa_bounces,		   &sa_rate,		 &sa_spacing,	  &sa_cache};
 	for (size_t i = 0; i < countof (variables); i++)
 		Cvar_RegisterVariable (variables[i]);
+	Cvar_RegisterVariable (&snd_steam_crossover);
+	Cvar_SetCallback (&snd_steam_crossover, SA_CrossoverChanged);
+	SA_CrossoverChanged (&snd_steam_crossover);
 	Cmd_AddCommand ("snd_steam_info", SA_Info);
 	Cmd_AddCommand ("snd_steam_rebuild", SA_Rebuild);
 }
@@ -1408,8 +1486,17 @@ static qboolean SA_CreateVoice (sa_voice_t *voice)
 	IPLBinauralEffectSettings binaural_settings = {0};
 	IPLDirectEffectSettings	  direct_settings = {1};
 	binaural_settings.hrtf = sa.hrtf;
-	if (!voice->binaural && iplBinauralEffectCreate (sa.context, &sa.audio, &binaural_settings, &voice->binaural) != IPL_STATUS_SUCCESS)
-		return false;
+	if (sa.renderer == SND_RENDERER_HRTF)
+	{
+		if (!voice->binaural && iplBinauralEffectCreate (sa.context, &sa.audio, &binaural_settings, &voice->binaural) != IPL_STATUS_SUCCESS)
+			return false;
+	}
+	else if (!voice->panning)
+	{
+		IPLPanningEffectSettings settings = {sa.speaker_layout};
+		if (iplPanningEffectCreate (sa.context, &sa.audio, &settings, &voice->panning) != IPL_STATUS_SUCCESS)
+			return false;
+	}
 	if (!voice->direct && iplDirectEffectCreate (sa.context, &sa.audio, &direct_settings, &voice->direct) != IPL_STATUS_SUCCESS)
 		return false;
 	return true;
@@ -1453,11 +1540,11 @@ static qboolean SA_ReadVoice (channel_t *channel, float *samples, qboolean pause
 	return offset > 0;
 }
 
-static void SA_AddStereo (float gain)
+static void SA_AddOutput (float gain)
 {
-	for (int side = 0; side < 2; side++)
+	for (int side = 0; side < sa.channels; side++)
 		for (int j = 0; j < STEAMAUDIO_FRAME_SIZE; j++)
-			sa_mix[side][j] += sa_stereo[side][j] * gain;
+			sa_mix[side][j] += sa_output[side][j] * gain;
 }
 
 static void SA_AddAmbisonics (float gain)
@@ -1467,14 +1554,28 @@ static void SA_AddAmbisonics (float gain)
 			sa_ambi[side][j] += sa_wet[side][j] * gain;
 }
 
-void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
+static void SA_SplitDirect (sa_voice_t *voice, float *samples)
 {
-	uint64_t	   block_serial[MAX_CHANNELS] = {0};
-	float		   zero[STEAMAUDIO_FRAME_SIZE] = {0};
-	float		  *stereo_data[] = {sa_stereo[0], sa_stereo[1]};
-	float		  *ambi_data[] = {sa_ambi[0], sa_ambi[1], sa_ambi[2], sa_ambi[3]};
-	float		  *wet_data[] = {sa_wet[0], sa_wet[1], sa_wet[2], sa_wet[3]};
-	IPLAudioBuffer stereo = SA_Buffer (2, stereo_data);
+	if (!sa.bass_decode)
+		return;
+	for (int i = 0; i < STEAMAUDIO_FRAME_SIZE; i++)
+	{
+		const snd_crossover_sample_t sample = S_Crossover_Process (&sa.crossover, &voice->crossover, samples[i]);
+		sa_mix[3][i] += (float)sample.low;
+		samples[i] = (float)sample.high;
+	}
+}
+
+void S_SteamAudio_Mix (int buffer[STEAMAUDIO_FRAME_SIZE][STEAMAUDIO_MAX_CHANNELS], qboolean pause_loops)
+{
+	uint64_t block_serial[MAX_CHANNELS] = {0};
+	float	 zero[STEAMAUDIO_FRAME_SIZE] = {0};
+	float	*output_data[STEAMAUDIO_MAX_CHANNELS];
+	float	*ambi_data[] = {sa_ambi[0], sa_ambi[1], sa_ambi[2], sa_ambi[3]};
+	float	*wet_data[] = {sa_wet[0], sa_wet[1], sa_wet[2], sa_wet[3]};
+	for (int i = 0; i < sa.channels; i++)
+		output_data[i] = sa_output[i];
+	IPLAudioBuffer output = SA_Buffer (sa.channels, output_data);
 	IPLAudioBuffer ambi = SA_Buffer (SA_AMBI_CHANNELS, ambi_data);
 	IPLAudioBuffer wet = SA_Buffer (SA_AMBI_CHANNELS, wet_data);
 	SDL_LockMutex (sa.mutex);
@@ -1484,6 +1585,14 @@ void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
 	memset (sa_mix, 0, sizeof (sa_mix));
 	memset (sa_ambi, 0, sizeof (sa_ambi));
 	memset (sa_reverb_input, 0, sizeof (sa_reverb_input));
+	if (sa.bass_decode && sa.crossover_frequency != S_SteamAudio_Crossover ())
+	{
+		sa.crossover_frequency = S_SteamAudio_Crossover ();
+		S_Crossover_Init (&sa.crossover, sa.audio.samplingRate, sa.crossover_frequency);
+		for (int i = 0; i < MAX_CHANNELS; i++)
+			S_Crossover_Reset (&sa.voices[i].crossover);
+		memset (sa.indirect_crossover, 0, sizeof (sa.indirect_crossover));
+	}
 	for (int i = 0; i < total_channels; i++)
 	{
 		channel_t  *channel = &snd_channels[i];
@@ -1493,19 +1602,41 @@ void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
 		{
 			if (voice->binaural)
 				iplBinauralEffectReset (voice->binaural);
+			if (voice->panning)
+				iplPanningEffectReset (voice->panning);
 			if (voice->direct)
 				iplDirectEffectReset (voice->direct);
 			voice->serial = channel->sa_serial;
 			voice->tail = 0;
+			S_Crossover_Reset (&voice->crossover);
 		}
 		qboolean has_samples = SA_ReadVoice (channel, sa_mono[i], pause_loops);
 		if (!has_samples)
 		{
+			if (sa.bass_decode && S_Crossover_Active (&voice->crossover))
+			{
+				memset (sa_direct_buffer, 0, sizeof (sa_direct_buffer));
+				SA_SplitDirect (voice, sa_direct_buffer);
+				if (!local && voice->panning)
+				{
+					float				  *data = sa_direct_buffer;
+					IPLAudioBuffer		   direct = SA_Buffer (1, &data);
+					IPLPanningEffectParams panning = {voice->direction};
+					iplPanningEffectApply (voice->panning, &panning, &direct, &output);
+					SA_AddOutput (1);
+				}
+				else
+					for (int j = 0; j < STEAMAUDIO_FRAME_SIZE; j++)
+					{
+						sa_mix[0][j] += sa_direct_buffer[j];
+						sa_mix[1][j] += sa_direct_buffer[j];
+					}
+			}
 			if (voice->binaural && voice->tail > 0)
 			{
-				iplBinauralEffectGetTail (voice->binaural, &stereo);
+				iplBinauralEffectGetTail (voice->binaural, &output);
 				voice->tail = iplBinauralEffectGetTailSize (voice->binaural);
-				SA_AddStereo (1);
+				SA_AddOutput (1);
 			}
 			continue;
 		}
@@ -1523,21 +1654,24 @@ void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
 				sa_reverb_input[j] += sa_mono[i][j] * attenuation;
 		if (local)
 		{
+			memcpy (sa_direct_buffer, sa_mono[i], sizeof (sa_direct_buffer));
+			SA_SplitDirect (voice, sa_direct_buffer);
 			for (int j = 0; j < STEAMAUDIO_FRAME_SIZE; j++)
 			{
-				sa_mix[0][j] += sa_mono[i][j];
-				sa_mix[1][j] += sa_mono[i][j];
+				sa_mix[0][j] += sa_direct_buffer[j];
+				sa_mix[1][j] += sa_direct_buffer[j];
 			}
 			continue;
 		}
 		if (attenuation <= 0 || channel->master_vol <= 0)
 		{
+			S_Crossover_Reset (&voice->crossover);
 			/* Keep sample/loop time above, but spend no DSP on inaudible voices. */
 			if (voice->binaural && voice->tail > 0)
 			{
-				iplBinauralEffectGetTail (voice->binaural, &stereo);
+				iplBinauralEffectGetTail (voice->binaural, &output);
 				voice->tail = iplBinauralEffectGetTailSize (voice->binaural);
-				SA_AddStereo (1);
+				SA_AddOutput (1);
 			}
 			continue;
 		}
@@ -1545,9 +1679,12 @@ void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
 		{
 			/* Resource failure must not mute an event. Fall back for this voice. */
 			for (int j = 0; j < STEAMAUDIO_FRAME_SIZE; j++)
+				sa_direct_buffer[j] = sa_mono[i][j] * attenuation;
+			SA_SplitDirect (voice, sa_direct_buffer);
+			for (int j = 0; j < STEAMAUDIO_FRAME_SIZE; j++)
 			{
-				sa_mix[0][j] += sa_mono[i][j] * attenuation;
-				sa_mix[1][j] += sa_mono[i][j] * attenuation;
+				sa_mix[0][j] += sa_direct_buffer[j];
+				sa_mix[1][j] += sa_direct_buffer[j];
 			}
 			continue;
 		}
@@ -1571,6 +1708,8 @@ void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
 		float		  *mono_data = sa_mono[i], *direct_data = sa_direct_buffer;
 		IPLAudioBuffer mono = SA_Buffer (1, &mono_data), direct = SA_Buffer (1, &direct_data);
 		iplDirectEffectApply (voice->direct, &direct_params, &mono, &direct);
+		/* Split each acoustically processed mono source before directional panning. */
+		SA_SplitDirect (voice, sa_direct_buffer);
 		IPLVector3 direction = {
 			position.x - sa_mix_snapshot.listener.origin.x, position.y - sa_mix_snapshot.listener.origin.y, position.z - sa_mix_snapshot.listener.origin.z};
 		float					distance = sqrtf (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
@@ -1584,12 +1723,21 @@ void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
 		}
 		else
 			binaural.direction.z = -1;
+		voice->direction = binaural.direction;
 		binaural.hrtf = sa.hrtf;
 		binaural.interpolation = IPL_HRTFINTERPOLATION_BILINEAR;
 		binaural.spatialBlend = 1;
-		iplBinauralEffectApply (voice->binaural, &binaural, &direct, &stereo);
-		voice->tail = iplBinauralEffectGetTailSize (voice->binaural);
-		SA_AddStereo (1);
+		if (sa.renderer == SND_RENDERER_HRTF)
+		{
+			iplBinauralEffectApply (voice->binaural, &binaural, &direct, &output);
+			voice->tail = iplBinauralEffectGetTailSize (voice->binaural);
+		}
+		else
+		{
+			IPLPanningEffectParams panning = {binaural.direction};
+			iplPanningEffectApply (voice->panning, &panning, &direct, &output);
+		}
+		SA_AddOutput (1);
 	}
 	for (int i = 0; i <= sa.num_reflections; i++)
 	{
@@ -1635,12 +1783,27 @@ void S_SteamAudio_Mix (portable_samplepair_t *buffer, qboolean pause_loops)
 	decode.order = SA_ORDER;
 	decode.hrtf = sa.hrtf;
 	decode.orientation = sa_mix_snapshot.listener;
-	decode.binaural = IPL_TRUE;
-	iplAmbisonicsDecodeEffectApply (sa.decode, &decode, &ambi, &stereo);
-	SA_AddStereo (1);
-	for (int i = 0; i < STEAMAUDIO_FRAME_SIZE; i++)
+	decode.binaural = sa.renderer == SND_RENDERER_HRTF ? IPL_TRUE : IPL_FALSE;
+	if (sa.bass_decode)
 	{
-		buffer[i].left = (int)(CLAMP (-1.0f, sa_mix[0][i], 1.0f) * 32767 * 256);
-		buffer[i].right = (int)(CLAMP (-1.0f, sa_mix[1][i], 1.0f) * 32767 * 256);
+		/* Reflections/pathing remain Ambisonic until after the crossover. Decode
+		 * their low band to mono with the SDK's own channel normalization. */
+		for (int channel = 0; channel < SA_AMBI_CHANNELS; channel++)
+			for (int i = 0; i < STEAMAUDIO_FRAME_SIZE; i++)
+			{
+				const snd_crossover_sample_t sample = S_Crossover_Process (&sa.crossover, &sa.indirect_crossover[channel], sa_ambi[channel][i]);
+				sa_wet[channel][i] = (float)sample.low;
+				sa_ambi[channel][i] = (float)sample.high;
+			}
+		float		  *data = sa_direct_buffer;
+		IPLAudioBuffer bass = SA_Buffer (1, &data);
+		iplAmbisonicsDecodeEffectApply (sa.bass_decode, &decode, &wet, &bass);
+		for (int i = 0; i < STEAMAUDIO_FRAME_SIZE; i++)
+			sa_mix[3][i] += sa_direct_buffer[i];
 	}
+	iplAmbisonicsDecodeEffectApply (sa.decode, &decode, &ambi, &output);
+	SA_AddOutput (1);
+	for (int i = 0; i < STEAMAUDIO_FRAME_SIZE; i++)
+		for (int channel = 0; channel < sa.channels; channel++)
+			buffer[i][channel] = (int)(CLAMP (-1.0f, sa_mix[channel][i], 1.0f) * 32767 * 256);
 }

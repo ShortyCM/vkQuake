@@ -1,4 +1,4 @@
-/* Native SDK regression tests: real HRTF, moving occluders, transmission,
+/* Native SDK regression tests: real HRTF, speaker panning/decoding, moving occluders, transmission,
  * convolution/reverb (including unaligned PFFFT channels), and baked pathing.
  * These use the same frame size, order and native API as the engine renderer. */
 #include "../ThirdParty/SteamAudio/include/phonon.h"
@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../Quake/snd_crossover.h"
 
 #define FRAME 512
 #define CHECK(x)                                                  \
@@ -47,6 +48,169 @@ static double energy (const float *values, int size)
 	return sum;
 }
 
+static void crossover_response (int rate, int cutoff, double frequency, double response[3])
+{
+	snd_crossover_coeffs_t coeffs;
+	snd_crossover_t		   state = {0};
+	double				   input_energy = 0, output_energy[3] = {0};
+	S_Crossover_Init (&coeffs, rate, cutoff);
+	for (int i = 0; i < 2 * rate; i++)
+	{
+		const double				 input = sin (6.28318530717958647692 * frequency * i / rate);
+		const snd_crossover_sample_t sample = S_Crossover_Process (&coeffs, &state, input);
+		CHECK (isfinite (sample.low) && isfinite (sample.high));
+		if (i >= rate)
+		{
+			input_energy += input * input;
+			output_energy[0] += sample.low * sample.low;
+			output_energy[1] += sample.high * sample.high;
+			output_energy[2] += (sample.low + sample.high) * (sample.low + sample.high);
+		}
+	}
+	for (int i = 0; i < 3; i++)
+		response[i] = sqrt (output_energy[i] / input_energy);
+}
+
+static void test_crossover (void)
+{
+	CHECK (S_Crossover_Frequency (NAN) == 80 && S_Crossover_Frequency (INFINITY) == 80);
+	CHECK (S_Crossover_Frequency (-1000) == 60 && S_Crossover_Frequency (1000) == 120);
+	CHECK (S_Crossover_Frequency (84.9f) == 80 && S_Crossover_Frequency (85) == 90);
+	for (int rate = 44100; rate <= 48000; rate += 3900)
+		for (int cutoff = 60; cutoff <= 120; cutoff += 10)
+		{
+			double bass[3], center[3], treble[3];
+			CHECK (S_Crossover_Frequency ((float)cutoff) == cutoff);
+			crossover_response (rate, cutoff, cutoff / 4.0, bass);
+			crossover_response (rate, cutoff, cutoff, center);
+			crossover_response (rate, cutoff, cutoff * 4.0, treble);
+			CHECK (bass[0] > 0.995 && bass[0] < 1.001 && bass[1] < 0.005);
+			CHECK (treble[1] > 0.995 && treble[1] < 1.001 && treble[0] < 0.005);
+			CHECK (fabs (center[0] - 0.5) < 0.001 && fabs (center[1] - 0.5) < 0.001);
+			CHECK (fabs (bass[2] - 1) < 0.004 && fabs (center[2] - 1) < 0.004 && fabs (treble[2] - 1) < 0.004);
+
+			snd_crossover_coeffs_t coeffs;
+			snd_crossover_t		   mono = {0}, stereo[3][2] = {0}, continuous = {0}, blocked = {0};
+			snd_crossover_sample_t whole[4 * FRAME], blocks[4 * FRAME];
+			S_Crossover_Init (&coeffs, rate, cutoff);
+			for (int i = 0; i < 4 * FRAME; i++)
+			{
+				const double				 input = sin (i * 0.013) + 0.25 * sin (i * 0.75);
+				const snd_crossover_sample_t sample = S_Crossover_Process (&coeffs, &mono, input);
+				const snd_crossover_stereo_t same = S_Crossover_Stereo (&coeffs, stereo[0], input, input);
+				const snd_crossover_stereo_t left = S_Crossover_Stereo (&coeffs, stereo[1], input, 0);
+				const snd_crossover_stereo_t opposite = S_Crossover_Stereo (&coeffs, stereo[2], input, -input);
+				CHECK (same.left == sample.high && same.right == sample.high && same.bass == sample.low);
+				CHECK (left.left == sample.high && left.right == 0 && left.bass == sample.low * 0.5);
+				CHECK (opposite.left == sample.high && opposite.right == -sample.high && opposite.bass == 0);
+				whole[i] = S_Crossover_Process (&coeffs, &continuous, input);
+			}
+			for (int block = 0; block < 4; block++)
+				for (int j = 0; j < FRAME; j++)
+				{
+					const int i = block * FRAME + j;
+					blocks[i] = S_Crossover_Process (&coeffs, &blocked, sin (i * 0.013) + 0.25 * sin (i * 0.75));
+				}
+			CHECK (memcmp (whole, blocks, sizeof (whole)) == 0);
+			CHECK (S_Crossover_Active (&blocked));
+			S_Crossover_Reset (&blocked);
+			CHECK (!S_Crossover_Active (&blocked));
+			const snd_crossover_sample_t silence = S_Crossover_Process (&coeffs, &blocked, 0);
+			CHECK (silence.low == 0 && silence.high == 0);
+			for (int i = 0; i < rate; i++)
+				S_Crossover_Process (&coeffs, &continuous, 0);
+			CHECK (!S_Crossover_Active (&continuous));
+			printf (
+				"PASS LR4 %d Hz / %d Hz crossover: LP %.3f, HP %.3f, sum %.3f; stereo averaging, continuity, reset\n", rate, cutoff, center[0], center[1],
+				center[2]);
+		}
+}
+
+static void test_crossover_routing (IPLContext context, IPLAudioSettings *audio)
+{
+	snd_crossover_coeffs_t coeffs;
+	S_Crossover_Init (&coeffs, audio->samplingRate, 80);
+	const IPLSpeakerLayoutType layouts[] = {IPL_SPEAKERLAYOUTTYPE_SURROUND_5_1, IPL_SPEAKERLAYOUTTYPE_SURROUND_7_1};
+	for (int layout = 0; layout < 2; layout++)
+	{
+		const int				 channels = layout ? 8 : 6;
+		IPLPanningEffect		 effect = NULL;
+		IPLPanningEffectSettings settings = {{layouts[layout], 0, NULL}};
+		OK (iplPanningEffectCreate (context, audio, &settings, &effect));
+		double reference_bass = 0;
+		for (int angle = 0; angle < 8; angle++)
+		{
+			float			high[FRAME], low[FRAME], output[8][FRAME], *data[8];
+			snd_crossover_t state = {0};
+			for (int i = 0; i < FRAME; i++)
+			{
+				const double				 input = 0.25 * sin (i * 0.02) + 0.1 * sin (i * 0.2);
+				const snd_crossover_sample_t sample = S_Crossover_Process (&coeffs, &state, input);
+				high[i] = (float)sample.high;
+				low[i] = (float)sample.low;
+			}
+			for (int channel = 0; channel < 8; channel++)
+				data[channel] = output[channel];
+			float				  *input_data[] = {high};
+			IPLAudioBuffer		   in = {1, FRAME, input_data}, out = {channels, FRAME, data};
+			const float			   radians = (float)(angle * 0.7853981633974483);
+			IPLPanningEffectParams params = {{sinf (radians), 0, -cosf (radians)}};
+			// Settle panning interpolation so only the source crossover is measured.
+			iplPanningEffectApply (effect, &params, &in, &out);
+			iplPanningEffectApply (effect, &params, &in, &out);
+			CHECK (energy (output[3], FRAME) == 0);
+			memcpy (output[3], low, sizeof (low));
+			const double bass = energy (output[3], FRAME);
+			if (!angle)
+				reference_bass = bass;
+			CHECK (bass > 0 && bass == reference_bass);
+			double main_energy = 0;
+			for (int channel = 0; channel < channels; channel++)
+				if (channel != 3)
+					main_energy += energy (output[channel], FRAME);
+			CHECK (fabs (main_energy / energy (high, FRAME) - 1) < 0.001);
+		}
+		iplPanningEffectRelease (&effect);
+		printf ("PASS %d Hz / %d channels: mono bass gain independent of direction; high band panned\n", audio->samplingRate, channels);
+	}
+
+	// The indirect bass decoder must recover mono source level using native SH normalization.
+	IPLAmbisonicsEncodeEffect		  encode = NULL;
+	IPLAmbisonicsEncodeEffectSettings encode_settings = {1};
+	IPLAmbisonicsDecodeEffect		  decode = NULL;
+	IPLAmbisonicsDecodeEffectSettings decode_settings = {{IPL_SPEAKERLAYOUTTYPE_MONO, 0, NULL}, NULL, 1};
+	OK (iplAmbisonicsEncodeEffectCreate (context, audio, &encode_settings, &encode));
+	OK (iplAmbisonicsDecodeEffectCreate (context, audio, &decode_settings, &decode));
+	for (int angle = 0; angle < 4; angle++)
+	{
+		float		   input[FRAME], reference[FRAME], ambi[4][FRAME], low[4][FRAME], output[FRAME];
+		float		  *input_data[] = {input}, *ambi_data[] = {ambi[0], ambi[1], ambi[2], ambi[3]};
+		float		  *low_data[] = {low[0], low[1], low[2], low[3]}, *output_data[] = {output};
+		IPLAudioBuffer in = {1, FRAME, input_data}, encoded = {4, FRAME, ambi_data}, bass = {4, FRAME, low_data}, out = {1, FRAME, output_data};
+		IPLAmbisonicsEncodeEffectParams params = {{(float)(angle & 1), 0, (float)(angle & 2 ? 1 : -1)}, 1};
+		IPLAmbisonicsDecodeEffectParams decode_params = {0};
+		decode_params.order = 1;
+		decode_params.orientation = space (0, 0, 0);
+		snd_crossover_t state[4] = {0}, mono = {0};
+		for (int i = 0; i < FRAME; i++)
+		{
+			input[i] = 0.25f * sinf (i * 0.02f);
+			reference[i] = (float)S_Crossover_Process (&coeffs, &mono, input[i]).low;
+		}
+		iplAmbisonicsEncodeEffectApply (encode, &params, &in, &encoded);
+		iplAmbisonicsEncodeEffectApply (encode, &params, &in, &encoded);
+		for (int channel = 0; channel < 4; channel++)
+			for (int i = 0; i < FRAME; i++)
+				low[channel][i] = (float)S_Crossover_Process (&coeffs, &state[channel], ambi[channel][i]).low;
+		iplAmbisonicsDecodeEffectApply (decode, &decode_params, &bass, &out);
+		for (int i = 0; i < FRAME; i++)
+			CHECK (fabs (output[i] - reference[i]) < 1e-5);
+	}
+	iplAmbisonicsEncodeEffectRelease (&encode);
+	iplAmbisonicsDecodeEffectRelease (&decode);
+	printf ("PASS %d Hz: low-band Ambisonics decoded to mono at source gain\n", audio->samplingRate);
+}
+
 static void test_hrtf (IPLContext context, IPLAudioSettings *audio, IPLHRTF hrtf)
 {
 	IPLBinauralEffect		  effect = NULL;
@@ -83,6 +247,118 @@ static void test_hrtf (IPLContext context, IPLAudioSettings *audio, IPLHRTF hrtf
 	CHECK (front_back > 1e-4 && up_down > 1e-4);
 	iplBinauralEffectRelease (&effect);
 	puts ("PASS HRTF: left/right, front/back, elevation");
+}
+
+static void test_speakers (IPLContext context, IPLAudioSettings *audio)
+{
+	const IPLSpeakerLayoutType layouts[] = {
+		IPL_SPEAKERLAYOUTTYPE_STEREO, IPL_SPEAKERLAYOUTTYPE_QUADRAPHONIC, IPL_SPEAKERLAYOUTTYPE_SURROUND_5_1, IPL_SPEAKERLAYOUTTYPE_SURROUND_7_1};
+	const int		 channels[] = {2, 4, 6, 8};
+	const IPLVector3 directions[] = {{-1, 0, 0}, {1, 0, 0}, {0, 0, -1}, {0, 0, 1}};
+	float			 input[FRAME];
+	for (int i = 0; i < FRAME; i++)
+		input[i] = 0.1f * sinf (i * 0.04f);
+	float		  *input_data[] = {input};
+	IPLAudioBuffer in = {1, FRAME, input_data};
+	for (int layout = 0; layout < 4; layout++)
+	{
+		IPLPanningEffect				  panning = NULL;
+		IPLPanningEffectSettings		  panning_settings = {{layouts[layout], 0, NULL}};
+		IPLAmbisonicsDecodeEffect		  decode = NULL;
+		IPLAmbisonicsDecodeEffectSettings decode_settings = {{layouts[layout], 0, NULL}, NULL, 1};
+		OK (iplPanningEffectCreate (context, audio, &panning_settings, &panning));
+		// Speaker decoding must work without loading or supplying an HRTF.
+		OK (iplAmbisonicsDecodeEffectCreate (context, audio, &decode_settings, &decode));
+		for (int direction = 0; direction < 4; direction++)
+		{
+			float  output[8][FRAME] = {0};
+			float *output_data[8];
+			for (int channel = 0; channel < 8; channel++)
+			{
+				output_data[channel] = output[channel];
+				if (channel >= channels[layout])
+					for (int i = 0; i < FRAME; i++)
+						output[channel][i] = 12345;
+			}
+			IPLAudioBuffer		   out = {channels[layout], FRAME, output_data};
+			IPLPanningEffectParams params = {directions[direction]};
+			iplPanningEffectReset (panning);
+			iplPanningEffectApply (panning, &params, &in, &out);
+			double e[8] = {0}, total = 0;
+			for (int channel = 0; channel < channels[layout]; channel++)
+				total += e[channel] = energy (output[channel], FRAME);
+			CHECK (total > 1e-6);
+			for (int channel = channels[layout]; channel < 8; channel++)
+				for (int i = 0; i < FRAME; i++)
+					CHECK (output[channel][i] == 12345);
+			double left = e[0], right = e[1];
+			if (channels[layout] == 4)
+			{
+				left += e[2];
+				right += e[3];
+			}
+			if (channels[layout] >= 6)
+			{
+				left += e[4] + e[6];
+				right += e[5] + e[7];
+				CHECK (e[3] == 0); // SDK panning excludes LFE; the source crossover supplies its low band separately.
+			}
+			if (direction < 2)
+				CHECK (direction == 0 ? left > right : right > left);
+			if (direction == 3 && channels[layout] > 2)
+				CHECK ((channels[layout] == 4 ? e[2] + e[3] : e[4] + e[5]) > e[0] + e[1]);
+			if (direction == 2 && channels[layout] >= 6)
+				CHECK (e[2] > e[0] && e[2] > e[1]);
+
+			// Reflections/reverb use Ambisonics, independent of direct panning.
+			float		   ambisonics[4][FRAME] = {0};
+			float		  *ambi_data[] = {ambisonics[0], ambisonics[1], ambisonics[2], ambisonics[3]};
+			IPLAudioBuffer ambi = {4, FRAME, ambi_data};
+			memcpy (ambisonics[0], input, sizeof (input));
+			IPLAmbisonicsDecodeEffectParams decode_params = {0};
+			decode_params.order = 1;
+			decode_params.orientation = space (0, 0, 0);
+			decode_params.binaural = IPL_FALSE;
+			iplAmbisonicsDecodeEffectApply (decode, &decode_params, &ambi, &out);
+			total = 0;
+			for (int channel = 0; channel < channels[layout]; channel++)
+				total += energy (output[channel], FRAME);
+			CHECK (total > 1e-6);
+			if (channels[layout] > 2)
+				CHECK (energy (output[channels[layout] - 1], FRAME) > 1e-7);
+		}
+		// A moving source must crossfade within this block, not stay at its
+		// previous direction until the next block (SDK 4.8.1 regression).
+		float  output[8][FRAME] = {0};
+		float *output_data[8];
+		for (int channel = 0; channel < 8; channel++)
+			output_data[channel] = output[channel];
+		IPLAudioBuffer		   out = {channels[layout], FRAME, output_data};
+		IPLPanningEffectParams params = {directions[0]};
+		iplPanningEffectApply (panning, &params, &in, &out);
+		iplPanningEffectApply (panning, &params, &in, &out);
+		params.direction = directions[1];
+		iplPanningEffectApply (panning, &params, &in, &out);
+		for (int endpoint = 0; endpoint < 2; endpoint++)
+		{
+			const int sample = endpoint ? FRAME - 1 : 1;
+			double	  left = fabs (output[0][sample]), right = fabs (output[1][sample]);
+			if (channels[layout] == 4)
+			{
+				left += fabs (output[2][sample]);
+				right += fabs (output[3][sample]);
+			}
+			if (channels[layout] >= 6)
+			{
+				left += fabs (output[4][sample]) + fabs (output[6][sample]);
+				right += fabs (output[5][sample]) + fabs (output[7][sample]);
+			}
+			CHECK (endpoint ? right > left : left > right);
+		}
+		iplAmbisonicsDecodeEffectRelease (&decode);
+		iplPanningEffectRelease (&panning);
+		printf ("PASS %d-channel speakers: direct panning, channel order, and Ambisonics decode\n", channels[layout]);
+	}
 }
 
 static void add_mesh (IPLScene scene, IPLVector3 *vertices, int nv, IPLTriangle *triangles, int nt)
@@ -298,9 +574,11 @@ static void test_simulation (IPLContext context, IPLAudioSettings *audio)
 	iplSceneRelease (&scene);
 }
 
-int main (void)
+int main (int argc, char **argv)
 {
 	setvbuf (stdout, NULL, _IONBF, 0);
+	test_crossover ();
+	const int lfe_only = argc == 2 && strcmp (argv[1], "--lfe-only") == 0;
 	for (int rate = 0; rate < 2; rate++)
 	{
 		IPLContext		   context = NULL;
@@ -313,16 +591,23 @@ int main (void)
 		settings.simdLevel = IPL_SIMDLEVEL_AVX2;
 		settings.flags = IPL_CONTEXTFLAGS_VALIDATION;
 		OK (iplContextCreate (&settings, &context));
+		test_crossover_routing (context, &audio);
+		if (lfe_only)
+		{
+			iplContextRelease (&context);
+			continue;
+		}
 		hrtf_settings.type = IPL_HRTFTYPE_DEFAULT;
 		hrtf_settings.volume = 1;
 		OK (iplHRTFCreate (context, &audio, &hrtf_settings, &hrtf));
 		printf ("Testing %d Hz\n", audio.samplingRate);
 		test_hrtf (context, &audio, hrtf);
+		test_speakers (context, &audio);
 		test_simulation (context, &audio);
 		iplHRTFRelease (&hrtf);
 		iplContextRelease (&context);
 	}
 	CHECK (validation_errors == 0);
-	puts ("All native Steam Audio tests passed.");
+	puts (lfe_only ? "Crossover and LFE routing tests passed." : "All native Steam Audio tests passed.");
 	return 0;
 }

@@ -60,6 +60,9 @@ vec3_t listener_up;
 int soundtime;	 // sample PAIRS
 int paintedtime; // sample PAIRS
 
+static int sound_buffers;
+static int sound_oldsamplepos;
+
 int					  s_rawend;
 portable_samplepair_t s_rawsamples[MAX_RAW_SAMPLES];
 
@@ -111,7 +114,7 @@ static void S_SoundInfo_f (void)
 		return;
 	}
 
-	Con_Printf ("%d bit, %s, %d Hz\n", shm->samplebits, (shm->channels == 2) ? "stereo" : "mono", shm->speed);
+	Con_Printf ("%d bit, %d channels, %d Hz\n", shm->samplebits, shm->channels, shm->speed);
 	Con_Printf ("%5d samples\n", shm->samples);
 	Con_Printf ("%5d samplepos\n", shm->samplepos);
 	Con_Printf ("%5d submission_chunk\n", shm->submission_chunk);
@@ -151,7 +154,7 @@ void S_Startup (void)
 	}
 	else
 	{
-		Con_Printf ("Audio: %d bit, %s, %d Hz\n", shm->samplebits, (shm->channels == 2) ? "stereo" : "mono", shm->speed);
+		Con_Printf ("Audio: %d bit, %d channels, %d Hz\n", shm->samplebits, shm->channels, shm->speed);
 	}
 }
 
@@ -839,6 +842,33 @@ S_Update
 Called once each time through the main loop
 ============
 */
+// Called with snd_mutex held, outside the SDL callback lock. Reopen only when
+// the output layout changes; preserve each voice's position in its sample.
+static qboolean S_ConfigureOutput (void)
+{
+	if (shm && shm->channels == S_SteamAudio_OutputChannels ())
+		return true;
+
+	const int previous_time = paintedtime;
+	S_SteamAudio_Shutdown ();
+	SNDDMA_Shutdown ();
+	sound_started = SNDDMA_Init (&sn);
+	if (!sound_started && S_SteamAudio_Renderer () != SND_RENDERER_STANDARD)
+	{
+		Con_Warning ("Could not open the selected audio layout; using Standard stereo speakers.\n");
+		Cvar_SetValueQuick (&snd_renderer, SND_RENDERER_STANDARD);
+		sound_started = SNDDMA_Init (&sn);
+	}
+	if (!sound_started)
+		return false;
+
+	sound_buffers = sound_oldsamplepos = soundtime = paintedtime = 0;
+	for (int i = 0; i < total_channels; i++)
+		snd_channels[i].end -= previous_time;
+	S_ClearBuffer ();
+	return true;
+}
+
 void S_Update (vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 {
 	int		   i, j;
@@ -849,6 +879,8 @@ void S_Update (vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 	SDL_LockMutex (snd_mutex);
 	if (!sound_started || (snd_blocked > 0))
 		goto unlock_mutex;
+	if (!S_ConfigureOutput ())
+		goto unlock_mutex;
 
 	VectorCopy (origin, listener_origin);
 	VectorCopy (forward, listener_forward);
@@ -858,6 +890,9 @@ void S_Update (vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 	// update general area ambient sound sources
 	S_UpdateAmbientSounds ();
 	S_SteamAudio_Update ();
+	// A failed SDK initialization can select the standard stereo fallback.
+	if (!S_ConfigureOutput ())
+		goto unlock_mutex;
 
 	combine = NULL;
 
@@ -940,10 +975,8 @@ unlock_mutex:
 
 static void GetSoundtime (void)
 {
-	int		   samplepos;
-	static int buffers;
-	static int oldsamplepos;
-	int		   fullsamples;
+	int samplepos;
+	int fullsamples;
 
 	fullsamples = shm->samples / shm->channels;
 
@@ -951,20 +984,20 @@ static void GetSoundtime (void)
 	// calls to S_Update.  Oh well.
 	samplepos = SNDDMA_GetDMAPos ();
 
-	if (samplepos < oldsamplepos)
+	if (samplepos < sound_oldsamplepos)
 	{
-		buffers++; // buffer wrapped
+		sound_buffers++; // buffer wrapped
 
 		if (paintedtime > 0x40000000)
 		{ // time to chop things off to avoid 32 bit limits
-			buffers = 0;
+			sound_buffers = 0;
 			paintedtime = fullsamples;
 			S_StopAllSounds (true, true);
 		}
 	}
-	oldsamplepos = samplepos;
+	sound_oldsamplepos = samplepos;
 
-	soundtime = buffers * fullsamples + samplepos / shm->channels;
+	soundtime = sound_buffers * fullsamples + samplepos / shm->channels;
 }
 
 void S_ExtraUpdate (void)
@@ -985,6 +1018,10 @@ static void S_Update_ (void)
 	SDL_LockMutex (snd_mutex);
 
 	if (!sound_started || (snd_blocked > 0))
+		goto unlock_mutex;
+	// Multichannel devices can open before the first renderer update at startup.
+	// Keep their buffer silent until the Steam Audio mixer is ready.
+	if (shm->channels > 2 && !S_SteamAudio_Active ())
 		goto unlock_mutex;
 
 	SNDDMA_LockBuffer ();
@@ -1009,7 +1046,7 @@ static void S_Update_ (void)
 
 	// mix ahead of current position
 	endtime = soundtime + (unsigned int)(_snd_mixahead.value * shm->speed);
-	samps = shm->samples >> (shm->channels - 1);
+	samps = shm->samples / shm->channels;
 	endtime = q_min (endtime, (unsigned int)(soundtime + samps));
 	if (S_SteamAudio_Active () && endtime > (unsigned int)paintedtime)
 	{

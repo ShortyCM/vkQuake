@@ -1220,6 +1220,7 @@ copy "$(SolutionDir)\..\SDL3\lib64\*.dll" "$(TargetDir)"</Command>
     <ClInclude Include="..\..\Quake\quakedef.h" />
     <ClInclude Include="..\..\Quake\q_sound.h" />
     <ClInclude Include="..\..\Quake\snd_steamaudio.h" />
+    <ClInclude Include="..\..\Quake\snd_crossover.h" />
     <ClInclude Include="..\..\Quake\snd_steamaudio_api.h" />
     <ClInclude Include="..\..\Quake\q_stdinc.h" />
     <ClInclude Include="..\..\Quake\render.h" />
