@@ -3557,9 +3557,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 
 	vulkan_globals.device_idle = false;
 
-	// Only clear the request once a frame actually captured the image. If this frame
-	// had no swapchain image (e.g. none free yet on MoltenVK), the readback was skipped:
-	// keep the request pending and capture on the next frame instead of dropping it.
+	// Keep the request pending if this frame skipped readback.
 	if (take_screenshot && (readback.buffer != VK_NULL_HANDLE))
 	{
 		WriteScreenshot (readback.buffer, readback.memory);
@@ -4997,8 +4995,7 @@ SCR_ScreenShot_f -- johnfitz
 */
 void SCR_ScreenShot_f (void)
 {
-	// A slower RGSS frame may still be submitting or writing the previous capture.
-	// Finish that task before publishing a new request or changing its filename.
+	// The previous frame may still be reading or clearing the screenshot request.
 	GL_SynchronizeEndRenderingTask ();
 
 	if ((vulkan_globals.swap_chain_format != VK_FORMAT_B8G8R8A8_UNORM) && (vulkan_globals.swap_chain_format != VK_FORMAT_B8G8R8A8_SRGB) &&
