@@ -209,6 +209,9 @@ extern cvar_t crosshair_size;
 extern cvar_t crosshair_color;
 extern cvar_t crosshair_alpha;
 
+extern cvar_t sv_autosave;
+extern cvar_t sv_autosave_interval;
+
 static qboolean slider_grab;
 static qboolean scrollbar_grab;
 
@@ -231,6 +234,24 @@ static const crosshair_t crosshair_defs[] =
 
 static const size_t num_crosshair_defs = countof (crosshair_defs);
 // clang-format on
+
+// Autosave
+static struct
+{
+	const char *title;
+	float		autosave_duration;
+} autosave_presets[] = {
+	{"Off", 30.0f}, // Use default
+	{"every 10 s", 10.0f},
+	{"every 20 s", 20.0f},
+	{"every 30 s", 30.0f}, // default value
+	{"every 1 mn", 1 * 60.0f},
+	{"every 2 mn", 2 * 60.0f},
+	{"every 5 mn", 5 * 60.0f},
+	{"every 10 mn", 10 * 60.0f},
+};
+
+const int num_autosave_presets = countof (autosave_presets);
 
 /*
 ================
@@ -1666,6 +1687,7 @@ enum
 	GAME_OPT_CROSSHAIR_OPACITY,
 	GAME_OPT_FAST_LOADING,
 	GAME_OPT_AUTOLOAD,
+	GAME_OPT_AUTOSAVE,
 	GAME_OPT_SAVEICON,
 	GAME_OPT_STARTUP_DEMOS,
 	GAME_OPT_SHOWFPS,
@@ -1711,7 +1733,7 @@ static void M_GameOptions_AdjustSliders (int dir, qboolean mouse)
 	case GAME_OPT_SCALE: // console and menu scale
 		if (scr_relativescale.value)
 		{
-			f = M_GetSliderPos (1, 3.0f, scr_relativescale.value, false, mouse, clamped_mouse, dir, 0.1, 999);
+			f = M_GetSliderPos (1, 3.0f, scr_relativescale.value, false, mouse, clamped_mouse, dir, 0.05, 999);
 			Cvar_SetValue ("scr_relativescale", f);
 		}
 		else
@@ -1797,7 +1819,7 @@ static void M_GameOptions_AdjustSliders (int dir, qboolean mouse)
 		Cvar_SetValue ("crosshair_size", f);
 		break;
 	case GAME_OPT_CROSSHAIR_OPACITY:
-		f = M_GetSliderPos (0, 1, crosshair_alpha.value, false, mouse, clamped_mouse, dir, 0.1, 999);
+		f = M_GetSliderPos (0, 1, crosshair_alpha.value, false, mouse, clamped_mouse, dir, 0.05, 999);
 		Cvar_SetValue ("crosshair_alpha", f);
 		break;
 	case GAME_OPT_HUD_DETAIL: // interface detail
@@ -1818,6 +1840,39 @@ static void M_GameOptions_AdjustSliders (int dir, qboolean mouse)
 	case GAME_OPT_AUTOLOAD: // load last save on death
 		Cvar_SetValue ("autoload", ((int)autoload.value + 2 + dir) % 2);
 		break;
+	case GAME_OPT_AUTOSAVE: // Loop between presets
+	{
+		int	  current_autosave_preset_index = 0;
+		int	  new_autosave_preset_index = 0;
+		float min_delta_time = FLT_MAX;
+
+		if (sv_autosave.value <= 0.0f || sv_autosave_interval.value <= 0.0f)
+		{
+			new_autosave_preset_index = ((dir == 1) ? 1 : num_autosave_presets - 1);
+		}
+		else
+		{
+			// Autosave activated, find the current preset closest to sv_autosave_interval
+			// skip "off" setting
+			for (int j = 1; j < num_autosave_presets; j++)
+			{
+				if (fabs (sv_autosave_interval.value - autosave_presets[j].autosave_duration) < min_delta_time)
+				{
+					min_delta_time = fabs (sv_autosave_interval.value - autosave_presets[j].autosave_duration);
+					current_autosave_preset_index = j;
+				}
+			}
+			// Jump to the next or previous according to current_autosave_preset_index and the direction,
+			// with looping
+			new_autosave_preset_index =
+				(dir == 1) ? (current_autosave_preset_index + 1) % num_autosave_presets : (current_autosave_preset_index - 1) % num_autosave_presets;
+		}
+
+		// Force new cvar values
+		Cvar_SetValue ("sv_autosave", (new_autosave_preset_index > 0) ? 1.0f : 0.0f);
+		Cvar_SetValue ("sv_autosave_interval", autosave_presets[new_autosave_preset_index].autosave_duration);
+	}
+	break;
 	case GAME_OPT_SAVEICON: // Show an icon when save is in progress
 		Cvar_SetValue ("scr_saveicon", ((int)scr_saveicon.value + 2 + dir) % 2);
 		break;
@@ -1919,7 +1974,7 @@ static void M_GameOptions_Draw (cb_context_t *cbx)
 			M_Print (cbx, MENU_LABEL_X, y, "Interface Scale");
 			l = scr_relativescale.value ? 2.0f : ((vid.width / 320.0) - 1);
 			r = l > 0 ? ((scr_relativescale.value ? scr_relativescale.value : scr_conscale.value) - 1) / l : 0;
-			M_DrawSlider (cbx, MENU_SLIDER_X, y, r, va ("%.1f", r));
+			M_DrawSlider (cbx, MENU_SLIDER_X, y, r, va ("%.2f", r));
 			break;
 
 		case GAME_OPT_SBALPHA:
@@ -2011,7 +2066,7 @@ static void M_GameOptions_Draw (cb_context_t *cbx)
 
 		case GAME_OPT_CROSSHAIR_OPACITY:
 			M_Print (cbx, MENU_LABEL_X, y, "Crosshair Opacity");
-			M_DrawSlider (cbx, MENU_SLIDER_X, y, crosshair_alpha.value, va ("%.1f", crosshair_alpha.value));
+			M_DrawSlider (cbx, MENU_SLIDER_X, y, crosshair_alpha.value, va ("%.2f", crosshair_alpha.value));
 			break;
 
 		case GAME_OPT_FAST_LOADING:
@@ -2023,6 +2078,41 @@ static void M_GameOptions_Draw (cb_context_t *cbx)
 			M_Print (cbx, MENU_LABEL_X, y, "Load last save");
 			M_DrawCheckbox (cbx, MENU_VALUE_X, y, autoload.value);
 			break;
+
+		case GAME_OPT_AUTOSAVE:
+		{
+			// Atosave :
+			M_Print (cbx, MENU_LABEL_X, y, "Autosave");
+
+			// Display the effective value set in sv_autosave_interval,
+			// overriding the preset value, even if the next applied setting using the menu will use the autosave_presets again.
+			if (sv_autosave.value <= 0.0f || sv_autosave_interval.value <= 0.0f)
+			{
+				M_Print (cbx, MENU_VALUE_X, y, "Off");
+			}
+			else
+			{
+				if (sv_autosave_interval.value < 60.0f)
+				{
+					M_Print (cbx, MENU_VALUE_X, y, va ("Every %i s", (int)sv_autosave_interval.value));
+				}
+				else
+				{
+					int nb_minutes = (int)(sv_autosave_interval.value / 60.0f);
+					int nb_seconds = (int)(sv_autosave_interval.value - nb_minutes * 60.0f);
+
+					if (nb_seconds > 0)
+					{
+						M_Print (cbx, MENU_VALUE_X, y, va ("Every %i mn %i s", nb_minutes, nb_seconds));
+					}
+					else
+					{
+						M_Print (cbx, MENU_VALUE_X, y, va ("Every %i mn", nb_minutes));
+					}
+				}
+			}
+		}
+		break;
 
 		case GAME_OPT_SAVEICON:
 			M_Print (cbx, MENU_LABEL_X, y, "Saving indicator");
@@ -2105,7 +2195,7 @@ enum
 
 static int M_GraphicsOptions_NumItems ()
 {
-	return GRAPHICS_OPTIONS_ITEMS - (vulkan_globals.ray_query ? 0 : 1) - (vulkan_globals.screen_effects_sops ? 0 : 1);
+	return GRAPHICS_OPTIONS_ITEMS - (vulkan_globals.ray_query ? 0 : 1) - (vulkan_globals.screen_effects_sops && !vulkan_globals.ssao_broken ? 0 : 1);
 }
 
 static int graphics_options_cursor = 0;
@@ -2272,8 +2362,7 @@ static void M_GraphicsOptions_AdjustSliders (int dir, qboolean mouse)
 			Cvar_SetValueQuick (&r_rtshadows, (float)(((int)r_rtshadows.value + 4 + dir) % 4));
 		break;
 	case GRAPHICS_OPT_AMBIENT_OCCLUSION:
-		if (vulkan_globals.screen_effects_sops)
-			Cvar_SetValueQuick (&r_ssao, (float)(((int)CLAMP (0, r_ssao.value, 3) + 4 + dir) % 4));
+		Cvar_SetValueQuick (&r_ssao, (float)(((int)CLAMP (0, r_ssao.value, 3) + 4 + dir) % 4));
 		break;
 	}
 	M_BeginPreview (graphics_options_cursor, option == GRAPHICS_OPT_UNDERWATER ? PREVIEW_UNDERWATER : PREVIEW_WORLD);
@@ -2457,7 +2546,7 @@ static void M_GraphicsOptions_Draw (cb_context_t *cbx)
 	M_Print (cbx, MENU_LABEL_X, top + CHARACTER_SIZE * GRAPHICS_OPT_SOFT_PARTICLES, "Soft Particles");
 	M_DrawCheckbox (cbx, MENU_VALUE_X, top + CHARACTER_SIZE * GRAPHICS_OPT_SOFT_PARTICLES, r_softparticles.value);
 
-	if (vulkan_globals.screen_effects_sops)
+	if (vulkan_globals.screen_effects_sops && !vulkan_globals.ssao_broken)
 	{
 		const int row = GRAPHICS_OPT_AMBIENT_OCCLUSION - (vulkan_globals.ray_query ? 0 : 1);
 		M_PreviewRow (cbx, row, top + CHARACTER_SIZE * row);
@@ -2476,6 +2565,7 @@ static void M_GraphicsOptions_Draw (cb_context_t *cbx)
 
 	// cursor
 	M_Mouse_UpdateListCursor (&graphics_options_cursor, MENU_CURSOR_X, 320, top, CHARACTER_SIZE, M_GraphicsOptions_NumItems (), 0);
+	graphics_options_cursor = q_min (graphics_options_cursor, M_GraphicsOptions_NumItems () - 1);
 	Draw_SetOpacity (1.0f);
 	Draw_Character (cbx, MENU_CURSOR_X, top + graphics_options_cursor * CHARACTER_SIZE, 12 + ((int)(realtime * 4) & 1));
 }
